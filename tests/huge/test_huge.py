@@ -1,10 +1,11 @@
 """Huge-matrix test — n = 46 500, just past the LP64 wall.
 
-Opt-in: only runs when BIGLA_TEST_HUGE=1 is set in the environment.
+Opt-in by NAMING this directory: tests/conftest.py declines to collect it otherwise,
+so a bare `pytest` never reaches these.
 Requires ~20 GiB of free memory and a confirmed ILP64 backend.
 
 Run with:
-    BIGLA_TEST_HUGE=1 pytest tests/test_huge.py -v -s
+    make test-huge          # or: pytest tests/huge -v -s
 
 This is the test that justifies the package.  Record the machine and
 result in docs/backends.md after each run.
@@ -12,19 +13,14 @@ result in docs/backends.md after each run.
 
 from __future__ import annotations
 
-import os
-
 import numpy as np
 import pytest
 
-# Skip unless explicitly requested
-pytestmark = pytest.mark.skipif(
-    os.environ.get("BIGLA_TEST_HUGE", "0") != "1",
-    reason="Set BIGLA_TEST_HUGE=1 to run memory-intensive tests (~20 GiB required)",
-)
-
 import bigla
 from bigla._backend import backend_info
+
+# Skip unless explicitly requested
+
 
 N_HUGE = 46_500  # just past the 46341 LP64 ceiling
 

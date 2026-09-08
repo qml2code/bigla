@@ -12,13 +12,25 @@ Rows disappear from this file when their test exists, not when the code looks ri
 ## Open: fixed in code, no test
 
 None. D3, D4 and 5.4 were the last three and closed on 2026-09-08 with `tests/test_loader.py`.
+CI (FIXES §5.6) closed the same day with `.github/workflows/ci.yml`.
 
-## Deferred by agreement
+## Open: landed but unexercised
 
-| item | note |
+| item | state |
 |---|---|
-| **SPEC §5.6** — CI | `.github/workflows/` does not exist. Until it does, `docs/backends.md` has one row and no mechanism to gain more. |
-| **SPEC §6** — environment matrix | Six rows by backend provenance, one parameterised Dockerfile. This is where D3 gets its *real-world* coverage; the stub tests in `test_loader.py` cover the discovery logic, not the decorations an actual MKL or Debian OpenBLAS exports. |
+| **FIXES §6** — environment matrix | The mechanism is complete: `Dockerfile` (six provenance rows by build arg), `.github/workflows/backends.yml`, `tools/matrix.py` to reproduce a row locally, `tools/render_backends.py` to collect rows into `backends.json` and regenerate the `docs/backends.md` table, and `tests/long/test_env_matrix.py` asserting per row *which backend was resolved*. **No container row has ever run.** The authoring machine has no usable docker daemon, so the first execution is the first nightly. Until then `docs/backends.md` still has exactly one row. |
+
+Two of the six rows are expected to **fail on their first run**, and that is the design:
+`debian-openblas64` and `fedora-openblas64` carry the decoration this repo has been guessing
+at since the beginning (`docs/backends.md` lists it as an open question). The row asserts
+`NAME_64_`; if the distro build is bare `NAME_`, the row goes red and the log carries the
+answer. Read it off and correct the expectation — **do not** relax the pattern to something
+that accepts either, which converts the row back into decoration.
+
+What the matrix still cannot tell you: whether any of this works on macOS Accelerate,
+Windows, or the HPC module stacks (Cray LibSci, ARM Performance Libraries, NVIDIA nvpl).
+Those have no container form and stay UNVERIFIED in `docs/backends.md` until someone runs
+`python -m bigla.diagnose --format=json` on real hardware and adds the row.
 
 ## Closed
 
@@ -34,6 +46,7 @@ None. D3, D4 and 5.4 were the last three and closed on 2026-09-08 with `tests/te
 | **5.3** | thread default | `test_backends.py` (3 tests) |
 | **5.4** | `RTLD_GLOBAL` dropped, so undecorated symbols such as `dpotrf_` are not published to everything loaded afterwards. | `test_cdll_loaded_without_rtld_global`, `test_no_global_symbol_leak` |
 | **5.5** | lwork guard | `test_workspace.py` |
+| **FIXES §5.6** | No CI. `.github/workflows/ci.yml` runs lint plus the fast suite over the numpy axis SPEC §10 specifies (2.0 / 2.2 / current x py3.10/3.12/3.13, wheel and standalone `scipy-openblas64`, plus a macOS leg), and uploads each leg's `diagnose --format=json`. | `tests/test_matrix_config.py` pins the row definitions; the workflow itself is exercised by running. |
 
 ### How D3/D4/5.4 were verified red
 

@@ -8,7 +8,7 @@ PIP     ?= pip
 PYTEST  ?= pytest
 
 .PHONY: help install install-openblas test test-long test-huge test-all dev-env dev-setup \
-        conventional-commits review diagnose clean build
+        conventional-commits review diagnose matrix matrix-row backends-table clean build
 
 help:
 	@echo "bigla development targets:"
@@ -18,11 +18,15 @@ help:
 	@echo ""
 	@echo "  test             fast suite (excludes the long/huge markers)"
 	@echo "  test-long        container matrix + large-n workspace checks"
-	@echo "  test-huge        run huge-matrix test (~20 GiB, needs BIGLA_TEST_HUGE=1)"
+	@echo "  test-huge        run huge-matrix test (~20 GiB)"
 	@echo "  dev-setup        install the pre-commit hooks (one-time, one click)"
 	@echo "  conventional-commits  also install the commit-msg hook"
 	@echo "  review           run every hook over the whole tree"
 	@echo "  diagnose         python -m bigla.diagnose"
+	@echo ""
+	@echo "  matrix           build + run every environment-matrix row (needs docker)"
+	@echo "  matrix-row       one row:  make matrix-row ROW=debian-openblas64"
+	@echo "  backends-table   regenerate docs/backends.md from out/*.json"
 	@echo ""
 	@echo "  build            build wheel (py3-none-any)"
 	@echo "  clean            remove build artefacts"
@@ -41,16 +45,41 @@ install-openblas:
 # Testing
 # ---------------------------------------------------------------------------
 
-test:                 # seconds; everything except the `long` and `huge` markers
-	$(PYTEST) tests/ -m "not huge and not long" --tb=short -v
+# Selection is by DIRECTORY, and tests/conftest.py declines to collect tests/long and
+# tests/huge unless the invocation NAMES them. So these three targets are just the three
+# directories -- no markers, no environment variables, no --ignore flags -- and a bare
+# `pytest` runs the fast suite rather than a 20 GiB surprise.
+test:                 # seconds; the fast suite only
+	$(PYTEST) tests/ --tb=short -v
 
-test-long:            # minutes; container matrix + large-n workspace checks
-	BIGLA_TEST_LONG=1 $(PYTEST) tests/ -m "long" -v -s
+test-long:            # minutes; environment-matrix rows + large-n workspace checks
+	$(PYTEST) tests/long -v -s
 
-test-huge:            # ~20 GiB, unchanged
-	BIGLA_TEST_HUGE=1 $(PYTEST) tests/test_huge.py -v -s
+test-huge:            # ~20 GiB
+	$(PYTEST) tests/huge -v -s
 
 test-all: test test-long test-huge
+
+# ---------------------------------------------------------------------------
+# Environment matrix (FIXES.md §6)
+#
+# The rows and their expectations are declared ONCE, in .github/workflows/backends.yml.
+# These targets exist to reproduce a row locally when CI reports a decoration that
+# disagrees with what the row expected -- which is the whole point of the matrix, and
+# something you want to debug on a laptop rather than by pushing commits.
+# ---------------------------------------------------------------------------
+
+ROW ?= pip-numpy-wheel
+DOCKER ?= docker
+
+matrix-row:
+	$(PYTHON) tools/matrix.py run --row "$(ROW)" --docker "$(DOCKER)"
+
+matrix:
+	$(PYTHON) tools/matrix.py run --all --docker "$(DOCKER)"
+
+backends-table:
+	$(PYTHON) tools/render_backends.py out/
 
 # ---------------------------------------------------------------------------
 # Code quality -- all of it lives in .pre-commit-config.yaml (shared with qml2-dev).

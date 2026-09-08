@@ -1,0 +1,86 @@
+# Cheap axis: plain venvs on every push (FIXES.md §6). No containers here -- the discovery
+# LOGIC is covered by fake-CDLL stubs in tests/test_loader.py, which run in milliseconds.
+# Containers answer only what needs a real library, and they run in backends.yml.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pre-commit
+      - run: pre-commit run --all-files --show-diff-on-failure
+
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.10", "3.13"]
+        # SPEC §10 pins the numpy axis. `blas` selects where the ILP64 library comes from:
+        # `wheel` is numpy's bundled scipy_openblas64, `package` is the standalone
+        # scipy-openblas64 -- which _candidates() reaches FIRST, so the two rows really do
+        # resolve different files rather than the same one twice.
+        numpy-spec: ["numpy~=2.0.0", "numpy~=2.2.0", "numpy"]
+        blas: [wheel]
+        include:
+          - os: ubuntu-latest
+            python-version: "3.12"
+            numpy-spec: "numpy"
+            blas: package
+          - os: macos-latest
+            python-version: "3.12"
+            numpy-spec: "numpy"
+            blas: wheel
+        exclude:
+          # numpy 2.0/2.2 have no 3.13 wheels; the 3.10 leg covers those versions.
+          - python-version: "3.13"
+            numpy-spec: "numpy~=2.0.0"
+          - python-version: "3.13"
+            numpy-spec: "numpy~=2.2.0"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install "${{ matrix.numpy-spec }}"
+          pip install -e ".[test]"
+          if [ "${{ matrix.blas }}" = "package" ]; then pip install scipy-openblas64; fi
+
+      - name: Fast suite
+        run: pytest tests/ -q
+
+      - name: Diagnose
+        # Named per leg so the uploaded artifacts are a usable record of what each
+        # combination resolved, which is how docs/backends.md gets populated cheaply.
+        run: |
+          python -m bigla.diagnose
+          mkdir -p out
+          python -m bigla.diagnose --format=json \
+            --env "${{ matrix.os }}, py${{ matrix.python-version }}, ${{ matrix.numpy-spec }}, ${{ matrix.blas }}" \
+            > "out/${{ matrix.os }}-py${{ matrix.python-version }}-${{ matrix.blas }}.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: diagnose-${{ matrix.os }}-py${{ matrix.python-version }}-${{ strategy.job-index }}
+          path: out/*.json

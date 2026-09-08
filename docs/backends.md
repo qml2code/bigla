@@ -23,9 +23,16 @@ actual machine.**  Never add a row based on guesswork.
 
 ## Verified environments
 
+**This table is generated.** Rows come from `python -m bigla.diagnose --format=json` run in
+each environment-matrix row and collected by `tools/render_backends.py`; do not hand-edit
+between the markers. A row here is a claim that `diagnose` actually ran on that machine, and
+hand-editing makes the claim cheap.
+
+<!-- BEGIN GENERATED ROWS -->
 | environment | numpy source | scipy source | library resolved | decoration | ILP64 verified by | max n tested | notes / gotchas |
 |---|---|---|---|---|---|---|---|
 | manylinux, x86_64 | pip numpy 2.4.4 | pip scipy 1.17.1 | `<site>/numpy.libs/libscipy_openblas64_-*.so` | `scipy_NAME_64_` | config-string: `USE64BITINT` | (huge test not yet run) | scipy's own LAPACK is LP64 (`HAS_ILP64 is False`); we bind numpy's bundled library, not scipy's |
+<!-- END GENERATED ROWS -->
 
 ---
 
@@ -113,4 +120,8 @@ If `python -m bigla.diagnose` shows `ilp64: False` or fails to find a library:
 
 ## Changelog
 
-- 2024-xx-xx: initial seed from manylinux pip wheel environment.
+- initial seed from the manylinux pip wheel environment, hand-entered before the matrix
+  existed. It is the one row not produced by `tools/render_backends.py`, and the first
+  matrix run replaces it.
+- 2026-09-08: table placed under generation markers; `Dockerfile` + `.github/workflows/`
+  added, so rows are collected rather than transcribed.

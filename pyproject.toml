@@ -46,6 +46,11 @@ optional-dependencies.openblas = [ "scipy-openblas64" ]
 # Test dependencies (scipy used as reference implementation only)
 optional-dependencies.test = [
   "pytest>=7",
+  # tests/test_matrix_config.py reads the row definitions out of
+  # .github/workflows/backends.yml; tools/matrix.py reads the same file. A hard dependency
+  # rather than an importorskip: a skipped consistency check is a check nobody notices has
+  # stopped running.
+  "pyyaml",
   "scipy>=1.10",
 ]
 urls."Bug Tracker" = "https://github.com/qml2code/bigla/issues"
@@ -66,10 +71,6 @@ packages = [ "bigla" ]
 [tool.pytest.ini_options]
 testpaths = [ "tests" ]
 addopts = "-v --tb=short"
-markers = [
-  "huge: needs ~20 GiB (BIGLA_TEST_HUGE=1)",
-  "long: minutes, or needs docker/podman (BIGLA_TEST_LONG=1)",
-]
 
 # ---------------------------------------------------------------------------
 # ruff (linting / formatting)

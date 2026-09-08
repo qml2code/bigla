@@ -132,9 +132,19 @@ tests/
   test_correctness.py
   test_inplace.py
   test_backends.py
-  test_huge.py       # opt-in, needs ~20 GiB
+  long/              # minutes: environment-matrix rows, large-n workspace
+  huge/              # opt-in, needs ~20 GiB
 pyproject.toml       # deps: numpy; extra "openblas": scipy-openblas64
 ```
+
+*(Amended after implementation: the expensive tests were originally selected by pytest
+markers and live here as `test_huge.py`. Markers deselect only what is marked, and
+`test_huge.py` was gated by a `skipif` on `BIGLA_TEST_HUGE` while carrying no `huge`
+marker — so with that variable exported, `make test` selected and RAN the 20 GiB cases and
+`make test-huge` then ran them again. Selection is now by directory, which cannot be opted
+into by accident. The `skipif` was then dropped too: `tests/conftest.py` declines to collect
+`long/` and `huge/` unless the invocation names them, so a bare `pytest` is safe, `pytest
+tests/huge` works directly, and no environment variable is involved anywhere.)*
 
 ---
 

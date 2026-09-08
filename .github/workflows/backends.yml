@@ -1,0 +1,145 @@
+# Environment matrix (FIXES.md §6): six rows chosen by BACKEND PROVENANCE, not by OS.
+# Nightly and on tags, because these build containers and are far from cheap.
+#
+# Every row declares what it expects to resolve. That is the assertion that makes the
+# matrix meaningful: a Debian container with a pip numpy wheel resolves numpy's bundled
+# scipy_openblas64 and tests nothing about Debian -- a green row proving nothing.
+# tests/long/test_env_matrix.py turns each BIGLA_EXPECT_* below into a hard failure.
+name: backends
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  row:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: pip-numpy-wheel
+            name: "manylinux, pip numpy wheel"
+            base: python:3.12-slim
+            blas: wheel
+            expect_path: 'numpy\.libs/libscipy_openblas64_'
+            expect_decoration: scipy_NAME_64_
+            expect_confidence: config-string
+            expect_ilp64: "1"
+
+          - id: scipy-openblas64-pkg
+            name: "manylinux, scipy-openblas64 package"
+            base: python:3.12-slim
+            blas: scipy-openblas64
+            # _candidates() reaches the standalone package BEFORE numpy.libs, so this row
+            # resolves a genuinely different file from the row above.
+            expect_path: 'scipy_openblas64/lib/'
+            expect_decoration: scipy_NAME_64_
+            expect_confidence: config-string
+            expect_ilp64: "1"
+
+          - id: debian-openblas64
+            name: "Debian trixie, libopenblas64-dev"
+            base: debian:trixie
+            blas: debian
+            # Decoration here is an OPEN QUESTION (docs/backends.md): `_64_` or bare `_`?
+            # The row is expected to fail the first time it runs. That failure is the
+            # answer -- read it off the log and correct this line; do not relax it to a
+            # regex that accepts anything, which would turn the row back into decoration.
+            expect_path: '^/usr/lib/.*libopenblas64'
+            expect_decoration: NAME_64_
+            expect_confidence: config-string
+            expect_ilp64: "1"
+
+          - id: fedora-openblas64
+            name: "Fedora 41, openblas64"
+            base: fedora:41
+            blas: fedora
+            expect_path: '^/usr/lib.*openblas64'
+            expect_decoration: NAME_64_
+            expect_confidence: config-string
+            expect_ilp64: "1"
+
+          - id: conda-mkl
+            name: "conda-forge, MKL"
+            base: mambaorg/micromamba:latest
+            blas: mkl
+            # The only row that reaches the mkl_set_interface_layer branch.
+            expect_path: 'libmkl_rt'
+            expect_decoration: NAME_
+            expect_confidence: mkl-interface
+            expect_ilp64: "1"
+
+          - id: no-ilp64
+            name: "Debian trixie, no ILP64 present"
+            base: debian:trixie
+            blas: none
+            # The refusal path. No expect_* assertions: the point is that loading RAISES,
+            # with a message naming both escape hatches.
+            expect_no_backend: "1"
+
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          docker build \
+            --build-arg BASE_IMAGE=${{ matrix.base }} \
+            --build-arg BLAS_SOURCE=${{ matrix.blas }} \
+            -t "bigla-row:${{ matrix.id }}" .
+
+      - name: Run row
+        run: |
+          mkdir -p out
+          docker run --rm \
+            -e BIGLA_ROW_ID='${{ matrix.id }}' \
+            -e BIGLA_ROW_NAME='${{ matrix.name }}' \
+            -e BIGLA_EXPECT_PATH_RE='${{ matrix.expect_path }}' \
+            -e BIGLA_EXPECT_DECORATION='${{ matrix.expect_decoration }}' \
+            -e BIGLA_EXPECT_CONFIDENCE='${{ matrix.expect_confidence }}' \
+            -e BIGLA_EXPECT_ILP64='${{ matrix.expect_ilp64 }}' \
+            -e BIGLA_EXPECT_NO_BACKEND='${{ matrix.expect_no_backend }}' \
+            -e BIGLA_ROW_NOTES='${{ matrix.name }}' \
+            -v "$PWD/out:/out" \
+            "bigla-row:${{ matrix.id }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: row-${{ matrix.id }}
+          path: out/*.json
+
+  collect:
+    needs: row
+    # Rows are allowed to fail (a distro that changed its decoration is news, not a
+    # blocker), and the table should still be regenerated from whichever rows succeeded.
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: rows
+          pattern: row-*
+          merge-multiple: true
+
+      - name: Regenerate docs/backends.md
+        run: |
+          pip install numpy
+          pip install -e .
+          python tools/render_backends.py rows/
+          git diff --stat -- docs/backends.md backends.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backends-table
+          path: |
+            backends.json
+            docs/backends.md

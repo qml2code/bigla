@@ -71,11 +71,3 @@ def test_eigh_runs_at_the_float32_boundary(dtype):
     n = 3000
     w = bigla.eigvalsh(sym(n=n, dtype=dtype), driver="evd")
     assert w.shape == (n,) and np.isfinite(w).all()
-
-
-@pytest.mark.long
-def test_lwork_float32_large_n():
-    """n=20000 float32: ~1.6 GiB of workspace, so it lives behind the `long` marker."""
-    n = 20000
-    ws = Workspace.for_eigh(n, "evd", dtype=np.float32)
-    assert ws.nbytes >= (2 * n * n + 6 * n + 1) * 4

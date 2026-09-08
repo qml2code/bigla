@@ -98,9 +98,49 @@ bigla/diagnose.py    python -m bigla.diagnose -> paste-ready docs/backends.md ro
 docs/SPEC.md         original spec, amended in place
 docs/status.md       deferred items + closed defects and their tests
 docs/conventions.md  the ordering rule, expanded
+tests/               fast suite; a bare `pytest` runs exactly this
+tests/conftest.py    the collection policy: long/ and huge/ are opt-in by name
+tests/long/          minutes: environment-matrix rows, large-n workspace
+tests/huge/          ~20 GiB, opt-in; `make test-huge` only
+docs/backends.md     install matrix; the row table is GENERATED, do not hand-edit it
+Dockerfile           one file, six matrix rows by BLAS_SOURCE build arg
+tools/matrix.py      run a matrix row locally, reading the rows CI uses
+tools/render_backends.py   matrix rows -> backends.json -> docs/backends.md table
+.github/workflows/   ci.yml (cheap axis, every push); backends.yml (containers, nightly)
 ```
 
+## The environment matrix
+
+Six rows chosen by **backend provenance**, not by OS — the OS is incidental, the question is
+always which library discovery resolves and what decoration it uses. The rows and their
+expectations are declared once, in `.github/workflows/backends.yml`; `tools/matrix.py` reads
+them from there so a local reproduction cannot drift from CI.
+
+The trap the whole thing exists to avoid: **a pip numpy wheel bundles its own
+`numpy.libs/libscipy_openblas64_*.so`, and `_candidates()` reaches it before any system
+library.** So a Debian container with pip-installed numpy resolves numpy's copy and tests
+nothing about Debian — a green row proving nothing. Distro rows therefore install numpy from
+the distro, and `tests/long/test_env_matrix.py` asserts the resolved path, decoration, confidence
+and ILP64 verdict per row. `tests/test_matrix_config.py` makes a row that asserts nothing
+impossible to add.
+
+`docs/backends.md`'s table lives between `<!-- BEGIN GENERATED ROWS -->` markers and is
+written by `tools/render_backends.py`. A row there is a claim that `diagnose` actually ran on
+that machine; hand-editing makes the claim cheap.
+
 ## Dev workflow
+
+Test selection is by **directory**, never by marker, and `tests/conftest.py` declines to
+collect `tests/long` and `tests/huge` unless the invocation NAMES them. So `pytest` runs the
+fast suite, `pytest tests/huge` runs the 20 GiB cases, and there are no markers, no
+environment variables and no `--ignore` flags anywhere.
+
+This replaced two earlier mechanisms that each failed quietly. Markers deselect only what is
+marked, and `tests/huge` was gated by a bare `skipif` while carrying no marker — so with
+`BIGLA_TEST_HUGE` exported, `make test` ran the 20 GiB cases and `make test-huge` ran them
+again. The `skipif` that replaced it then made `pytest tests/huge` report "2 skipped" unless
+you knew the variable existed. `tests/test_collection.py` asserts the current policy, since
+it fails silently in the dangerous direction.
 
 `make dev-setup` installs the pre-commit hooks (black/isort/flake8/autoflake at width 99,
 shared with qml2-dev). There are deliberately **no** `make lint` / `make fmt` targets —

@@ -24,5 +24,10 @@ coverage.xml
 venv/
 ENV/
 
+# Environment-matrix output. Per-row diagnose JSON is transient -- the artefact worth
+# keeping is backends.json plus the regenerated docs/backends.md table, and those are
+# produced by tools/render_backends.py and committed deliberately.
+out/
+
 # Editor / OS
 .DS_Store
