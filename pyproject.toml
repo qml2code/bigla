@@ -1,0 +1,82 @@
+[build-system]
+build-backend = "hatchling.build"
+
+requires = [ "hatchling" ]
+
+[project]
+name = "bigla"
+version = "0.1.0"
+description = "ILP64 LAPACK for large dense-symmetric matrices — no 46341×46341 ceiling"
+readme = "README.md"
+keywords = [ "blas", "cholesky", "eigh", "ilp64", "kernel-methods", "lapack", "linalg" ]
+license = { text = "MIT" }
+authors = [
+  { name = "bigla contributors" },
+]
+requires-python = ">=3.10"
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Mathematics",
+  "Typing :: Typed",
+]
+dependencies = [
+  "numpy>=1.26",
+]
+
+optional-dependencies.dev = [
+  "bigla[test]",
+  # Not a hook -- run by hand (`mypy bigla/`); [tool.mypy] below configures it.
+  "mypy",
+  "numpy>=1.26",
+  # Formatting and linting are owned entirely by .pre-commit-config.yaml (shared with
+  # qml2-dev), which pins its own tool versions in isolated environments. Listing black /
+  # isort / flake8 here as well would pin them a second time, and the two pins drift.
+  # `make dev-setup` installs the hooks.
+  "pre-commit",
+]
+# Pull a standalone ILP64 OpenBLAS — the always-works answer when discovery fails
+optional-dependencies.openblas = [ "scipy-openblas64" ]
+# Test dependencies (scipy used as reference implementation only)
+optional-dependencies.test = [
+  "pytest>=7",
+  "scipy>=1.10",
+]
+urls."Bug Tracker" = "https://github.com/qml2code/bigla/issues"
+urls.Documentation = "https://github.com/qml2code/bigla/blob/main/docs/backends.md"
+urls.Homepage = "https://github.com/qml2code/bigla"
+
+[tool.hatch.build.targets.wheel]
+packages = [ "bigla" ]
+
+[tool.hatch.build.targets.wheel.shared-data]
+# Pure-Python wheel: py3-none-any
+# No compiled extension — if a build step ever creeps in, something went wrong.
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+testpaths = [ "tests" ]
+addopts = "-v --tb=short"
+markers = [
+  "huge: needs ~20 GiB (BIGLA_TEST_HUGE=1)",
+  "long: minutes, or needs docker/podman (BIGLA_TEST_LONG=1)",
+]
+
+# ---------------------------------------------------------------------------
+# ruff (linting / formatting)
+# ---------------------------------------------------------------------------
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
