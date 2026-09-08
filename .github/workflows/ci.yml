@@ -42,10 +42,17 @@ jobs:
             python-version: "3.12"
             numpy-spec: "numpy"
             blas: package
+          # macOS must use the standalone package, not the wheel's bundled library.
+          # _candidates() reaches exactly one thing on macOS -- numpy/.dylibs/*openblas64*
+          # -- and every system-library candidate below it is a Linux .so soname. A stock
+          # arm64 numpy links Accelerate and bundles no OpenBLAS, so the `wheel` leg found
+          # NO backend at all and every test raised BiglaBackendError. scipy-openblas64 is
+          # the documented always-works answer (`pip install bigla[openblas]`), so that is
+          # what the macOS leg exercises until Accelerate's $NEWLAPACK$ILP64 is verified.
           - os: macos-latest
             python-version: "3.12"
             numpy-spec: "numpy"
-            blas: wheel
+            blas: package
         exclude:
           # numpy 2.0/2.2 have no 3.13 wheels; the 3.10 leg covers those versions.
           - python-version: "3.13"

@@ -91,6 +91,13 @@ required environment variables.
 
 - **macOS + numpy wheel** (same as manylinux path but `.dylibs`)
   Library: `<site>/numpy/.dylibs/libscipy_openblas64_*.dylib`
+  **Does not exist on arm64.** CI (2026-09-08, `macos-latest`) found no backend at all:
+  a stock arm64 numpy links Accelerate and bundles no OpenBLAS, so the `.dylibs` glob
+  matches nothing — and every candidate after it in `_candidates()` is a Linux `.so`
+  soname, so discovery has no macOS system-library path whatsoever. Until Accelerate is
+  supported, the answer on macOS is `pip install bigla[openblas]`, which is what the CI
+  macOS leg now uses. Adding `.dylib` sonames to `_candidates()` is untested speculation
+  and deliberately not done.
 
 ### Windows
 

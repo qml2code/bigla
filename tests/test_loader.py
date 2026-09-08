@@ -24,8 +24,10 @@ Each test below fails against the tree that preceded its fix:
 from __future__ import annotations
 
 import ctypes
+import json
 import logging
 import os
+import subprocess
 import sys
 
 import numpy as np
@@ -278,22 +280,68 @@ def test_cdll_loaded_without_rtld_global(monkeypatch):
         assert ctypes.RTLD_GLOBAL not in args, f"{name} loaded with RTLD_GLOBAL"
 
 
+# Run in a subprocess: the global namespace is process-wide and cannot be un-polluted, so
+# the "before" measurement has to happen in a process where nothing has loaded a BLAS yet.
+_LEAK_PROBE = r"""
+import ctypes, json
+
+
+def visible(sym):
+    try:
+        getattr(ctypes.CDLL(None), sym)
+        return True
+    except (AttributeError, OSError):
+        return False
+
+
+# Import, up front, everything bigla's own discovery imports. scipy_openblas64 publishes
+# its symbols globally when IMPORTED -- on its own account, nothing to do with how bigla
+# dlopens it -- and _candidates() imports it to call get_lib_dir(). Doing it here means the
+# "before" snapshot already contains anything a third party published, so what the test
+# attributes to bigla is only what bigla's own ctypes.CDLL added.
+import numpy  # noqa: F401
+
+try:
+    import scipy_openblas64  # noqa: F401
+except ImportError:
+    pass
+
+import bigla  # noqa: F401  -- importing does NOT load the backend; _ensure_loaded is lazy
+from bigla._backend import _DECORATIONS, backend_info
+
+before = {f"{p}dpotrf{s}": visible(f"{p}dpotrf{s}") for p, s in _DECORATIONS}
+info = backend_info()  # the load happens here
+sym = f"{info.decoration[0]}dpotrf{info.decoration[1]}"
+print(json.dumps({"sym": sym, "before": before[sym], "after": visible(sym), "path": info.path}))
+"""
+
+
 @pytest.mark.skipif(
     not sys.platform.startswith("linux"), reason="global symbol namespace is dlopen-specific"
 )
 def test_no_global_symbol_leak():
-    """bigla's LAPACK symbols must not be visible through the global handle.
+    """bigla's own dlopen must not publish its LAPACK symbols to the global namespace.
 
-    Skipped for an undecorated backend (MKL, reference LAPACK built -i8): there, a plain
-    ``dpotrf_`` in the global namespace could equally have come from another consumer
-    that loaded its own LAPACK with RTLD_GLOBAL, so the check cannot attribute it.
+    Attribution is the whole difficulty. Checking only the end state blames bigla for a
+    symbol somebody else published: with scipy-openblas64 installed, importing that package
+    puts ``scipy_dpotrf_64_`` in the global namespace before bigla loads anything, and the
+    naive form of this test fails on a configuration where bigla is behaving perfectly.
+    So measure before and after bigla's load, in a fresh process, and skip when the symbol
+    was already there -- there, nothing can be attributed either way.
+
+    ``test_cdll_loaded_without_rtld_global`` is the deterministic half of 5.4; this is the
+    live confirmation, and it is allowed to abstain.
     """
-    prefix, suffix = backend_info().decoration
-    if (prefix, suffix) == ("", "_"):
-        pytest.skip("undecorated backend: a global dpotrf_ is not attributable to bigla")
+    proc = subprocess.run([sys.executable, "-c", _LEAK_PROBE], capture_output=True, text=True)
+    assert proc.returncode == 0, f"probe failed:\n{proc.stdout}\n{proc.stderr}"
+    data = json.loads(proc.stdout.strip().splitlines()[-1])
 
-    sym = f"{prefix}dpotrf{suffix}"
-    global_handle = ctypes.CDLL(None)
-
-    with pytest.raises(AttributeError):
-        getattr(global_handle, sym)
+    if data["before"]:
+        pytest.skip(
+            f"{data['sym']} was already global before bigla loaded "
+            "(scipy-openblas64 publishes it on import); not attributable"
+        )
+    assert not data["after"], (
+        f"{data['sym']} became visible through the global handle after bigla loaded "
+        f"{data['path']} -- the library was opened RTLD_GLOBAL"
+    )
