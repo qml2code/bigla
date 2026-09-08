@@ -6,7 +6,8 @@ Agent-oriented notes for this repo. (Compressed from the source; keep in sync wh
 > `README.md` is user-facing and current; this file is the agent-facing companion.
 > `docs/SPEC.md` is the ORIGINAL design spec, kept as a record — it is amended in place
 > where the implementation deliberately went the other way, so read its amendment notes
-> rather than its prose. `docs/status.md` lists what is fixed-but-untested.
+> rather than its prose. `docs/status.md` records what is deliberately not done yet, and
+> the discriminating test behind each closed defect.
 
 ## What this is
 
@@ -95,7 +96,7 @@ bigla/linalg.py      scipy-shaped public API
 bigla/workspace.py   reusable scratch; Workspace.for_eigh
 bigla/diagnose.py    python -m bigla.diagnose -> paste-ready docs/backends.md row
 docs/SPEC.md         original spec, amended in place
-docs/status.md       fixed-in-code, not-yet-tested
+docs/status.md       deferred items + closed defects and their tests
 docs/conventions.md  the ordering rule, expanded
 ```
 
