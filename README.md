@@ -161,7 +161,7 @@ Searched in order:
 5. MKL (`libmkl_rt.so{,.2,.1}`) — **last**, deliberately
 
 MKL is reached last because *probing* it has a side effect: validating its width calls
-`mkl_set_interface_layer(1)`, which changes the interface layer process-wide — including for a
+`MKL_Set_Interface_Layer(1)`, which changes the interface layer process-wide — including for a
 NumPy that is itself MKL-linked and running LP64. Since loading is two-pass (a verified-ILP64
 candidate always beats an LP64 one, wherever each appears in the list), the order barely affects
 *selection* any more; it exists to keep that probe from running when something else already works.

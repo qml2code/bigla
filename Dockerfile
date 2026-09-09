@@ -105,9 +105,15 @@ RUN python3 -m pip install --no-cache-dir --no-deps --break-system-packages -e /
 # silently drops the parent's own tests. Those rows reported a 9-item run and a green tick
 # while the entire fast suite never executed. This mirrors the Makefile, which already runs
 # `test` and `test-long` as separate targets.
+#
+# The fast suite is skipped on the no-backend row. Nearly every test there needs a working
+# backend, so with none present 39 of them fail with BiglaBackendError -- which is that row's
+# EXPECTED state, not a result. What the row is actually for is the refusal path, and
+# tests/long/test_env_matrix.py::test_no_backend_row_refuses_actionably asserts it. (This only
+# became visible once the two invocations above started running the fast suite there at all.)
 CMD ["/bin/sh", "-c", "\
 set -e; \
-python3 -m pytest /src/tests -q; \
+[ -n \"${BIGLA_EXPECT_NO_BACKEND:-}\" ] || python3 -m pytest /src/tests -q; \
 python3 -m pytest /src/tests/long -q; \
 mkdir -p /out; \
 python3 -m bigla.diagnose --format=json --env \"${BIGLA_ROW_NAME:-unnamed}\" \

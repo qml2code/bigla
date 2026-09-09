@@ -70,7 +70,7 @@ def _candidates():
     # 4. System OpenBLAS ILP64 -- ahead of MKL per SPEC 5.4: prefer a dedicated OpenBLAS64
     # when both are present. Ordering matters less for SELECTION now that loading is
     # two-pass, but probing has a side effect that ordering does control: _validate_ilp64
-    # calls mkl_set_interface_layer(1), mutating global MKL state in this process even when
+    # calls MKL_Set_Interface_Layer(1), mutating global MKL state in this process even when
     # bigla goes on to use OpenBLAS -- and if numpy is MKL-linked and running LP64, the probe
     # has just altered a library numpy is using. Reaching MKL last minimises that.
     for name in (
@@ -116,14 +116,33 @@ def _probe_decoration(lib: ctypes.CDLL) -> Optional[tuple[str, str]]:
 # These names are NOT derived from the LAPACK decoration.  In the numpy wheel
 # the relevant symbols are:
 #   scipy_openblas_get_config64_          (config string)
-#   scipy_openblas_get_num_threads_64_    (get thread count)    ← note _64_
-#   scipy_openblas_get_num_threads64_     (alternate)
-#   scipy_openblas_set_num_threads64_     (set thread count)    ← note 64_ (no leading _)
-#   scipy_openblas_set_num_threads_64_    CRASHES — do NOT use
+#   scipy_openblas_get_num_threads64_     (get thread count)    ← C binding
+#   scipy_openblas_set_num_threads64_     (set thread count)    ← C binding
+#   scipy_openblas_get_num_threads_64_    Fortran binding -- see the rule below
+#   scipy_openblas_set_num_threads_64_    Fortran binding -- SEGFAULTS if called by value
 #
 # We probe each function by trying a fixed priority list, verifying it is
 # callable, and caching the winning name.
 # ---------------------------------------------------------------------------
+
+# THE RULE FOR EVERY LIST BELOW: only C entry points, never Fortran ones.
+#
+# A trailing `_` on the base name (before any SYMBOLSUFFIX) marks the Fortran binding, whose
+# argument is a POINTER; the C binding takes the value. MKL spells the same distinction in
+# case: `MKL_Set_Num_Threads(int)` is C, plain `mkl_set_num_threads(int*)` is Fortran. Calling
+# a Fortran one through ctypes with a by-value argument makes the callee dereference that
+# value as an address -- SIGSEGV, not an exception.
+#
+# This is not hypothetical. The note that used to sit here recorded exactly one instance of
+# it -- `scipy_openblas_set_num_threads_64_` "crashes on the numpy wheel, the symbol exists
+# but has a different ABI" (that is the Fortran name; `...64_` without the underscore is the
+# C one) -- and worked around it by preferring the C spelling for THAT library, leaving the
+# Fortran spellings in place for others to fall through to. Environment-matrix run
+# 34347810149 then found both remaining ones: Debian's bare-decoration libopenblas64 reached
+# `openblas_set_num_threads_` and segfaulted, and MKL segfaulted at import in
+# `_validate_ilp64` on `mkl_set_interface_layer`.
+#
+# So: no name here may end in `_` before its suffix, and MKL names use its C capitalisation.
 
 # get_config candidates, in priority order
 _GET_CONFIG_CANDIDATES = [
@@ -132,26 +151,24 @@ _GET_CONFIG_CANDIDATES = [
     "openblas_get_config",
 ]
 
-# get_num_threads candidates
+# get_num_threads candidates. Getters take no arguments, so the Fortran spellings are not
+# dangerous here -- but they are dropped anyway, so that one rule covers the whole module and
+# nobody has to re-derive which lists are safe.
 _GET_THREADS_CANDIDATES = [
-    "scipy_openblas_get_num_threads_64_",
     "scipy_openblas_get_num_threads64_",
     "openblas_get_num_threads64_",
-    "openblas_get_num_threads_",
     "openblas_get_num_threads",
-    "mkl_get_max_threads",
+    "MKL_Get_Max_Threads",
 ]
 
-# set_num_threads candidates
-# NOTE: scipy_openblas_set_num_threads_64_ (with _64_) crashes on the numpy
-# wheel — the symbol exists but has a different ABI.  Use the 64_ variant.
+# set_num_threads candidates -- the list that segfaulted.
 _SET_THREADS_CANDIDATES = [
     "scipy_openblas_set_num_threads64_",
     "scipy_goto_set_num_threads64_",
     "openblas_set_num_threads64_",
-    "openblas_set_num_threads_",
     "openblas_set_num_threads",
-    "mkl_set_num_threads",
+    "goto_set_num_threads",
+    "MKL_Set_Num_Threads",
 ]
 
 
@@ -191,9 +208,17 @@ def _validate_ilp64(lib: ctypes.CDLL, prefix: str, suffix: str) -> tuple[bool, s
         # Got a config string without USE64BITINT → confirmed LP64
         return False, cfg_str
 
-    # MKL: set interface layer before first use
+    # MKL: set interface layer before first use.
+    #
+    # MKL_Set_Interface_Layer, not mkl_set_interface_layer: the capitalised name is the C
+    # entry point taking an int by value, the lowercase one is the Fortran binding taking
+    # int*. Calling the latter through ctypes with a value made MKL dereference 1 as an
+    # address, so the conda-forge row segfaulted HERE, during import, and never reached a
+    # single test (matrix run 34347810149).
     try:
-        fn = getattr(lib, "mkl_set_interface_layer")
+        fn = getattr(lib, "MKL_Set_Interface_Layer")
+        fn.restype = ctypes.c_int
+        fn.argtypes = [ctypes.c_int]
         MKL_INTERFACE_ILP64 = 1
         ret = fn(ctypes.c_int(MKL_INTERFACE_ILP64))
         if ret == MKL_INTERFACE_ILP64:
@@ -552,7 +577,7 @@ def thread_control_info() -> ThreadInfo:
 
         >>> import bigla
         >>> bigla.thread_control_info()
-        ThreadInfo(get_sym='scipy_openblas_get_num_threads_64_',
+        ThreadInfo(get_sym='scipy_openblas_get_num_threads64_',
                    set_sym='scipy_openblas_set_num_threads64_',
                    num_threads=12)
 
@@ -626,8 +651,27 @@ def set_num_threads(n: int) -> int:
     fn.restype = None
     fn.argtypes = [ctypes.c_int]
     fn(ctypes.c_int(n))
-    log.debug("set_num_threads: %s(%d) via %s", tinfo.set_sym, n, _INFO.path)  # type: ignore[union-attr]
-    return n
+
+    # Report what the library ACTUALLY has, not what we asked for. A serial OpenBLAS build
+    # (Fedora's openblas-serial64_, and any -DUSE_THREAD=0 build) exports the setter and
+    # accepts the call, but has no pool to resize: it stays at 1. Returning `n` there made
+    # this function's documented "the thread count that was actually set" a falsehood, and
+    # a caller sizing work by the return value would over-subscribe by that factor.
+    actual = _query_threads(_LIB, tinfo.get_sym) if tinfo.get_sym else n  # type: ignore[arg-type]
+    if actual and actual != n:
+        log.debug(
+            "set_num_threads: asked for %d, backend reports %d (single-threaded build?) via %s",
+            n,
+            actual,
+            _INFO.path,  # type: ignore[union-attr]
+        )
+    else:
+        log.debug(
+            "set_num_threads: %s(%d) via %s", tinfo.set_sym, n, _INFO.path  # type: ignore[union-attr]
+        )
+    # 0 means "not queryable" (no get symbol); fall back to the requested value there rather
+    # than reporting a count the caller cannot act on.
+    return actual or n
 
 
 @contextlib.contextmanager

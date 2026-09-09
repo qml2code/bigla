@@ -77,7 +77,7 @@ def _readme_section(heading):
 
 def test_mkl_is_probed_after_every_openblas_candidate(monkeypatch):
     """MKL last is a behavioural requirement, not a preference: `_validate_ilp64` calls
-    `mkl_set_interface_layer(1)` merely to PROBE, and that mutates the interface layer
+    `MKL_Set_Interface_Layer(1)` merely to PROBE, and that mutates the interface layer
     process-wide -- including for a NumPy that is itself MKL-linked and running LP64. Reaching
     MKL only when nothing else worked is what keeps that probe from firing needlessly.
     """

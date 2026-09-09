@@ -174,10 +174,46 @@ def test_get_num_threads():
     assert isinstance(n, int) and n >= 0
 
 
-def test_set_num_threads_explicit_roundtrip():
+def _require_resizable_pool():
+    """Skip unless this backend's thread pool can actually be resized.
+
+    A SERIAL OpenBLAS -- Fedora's `openblas-serial64_`, or any -DUSE_THREAD=0 build -- exports
+    the setter and accepts the call, but has no pool: it stays at 1. That is a legitimate
+    environment, not a defect, so the round-trip tests below skip on it. The skip is driven by
+    ``set_num_threads``'s RETURN value, which reports what the library actually has, so a
+    backend that silently ignored the setter could not use this path to look healthy: the
+    return value would have to lie first, and test_set_num_threads_reports_the_real_count
+    below is what stops that.
+    """
     orig = bigla.get_num_threads()
-    if orig == 0:
-        pytest.skip("thread count not queryable on this backend")
+    if orig == 0 or bigla.thread_control_info().set_sym is None:
+        pytest.skip("thread control not available on this backend")
+    if bigla.set_num_threads(2) != 2:
+        bigla.set_num_threads(orig)
+        pytest.skip(f"single-threaded backend: set_num_threads(2) stayed at {orig}")
+    bigla.set_num_threads(orig)
+    return orig
+
+
+def test_set_num_threads_reports_the_real_count():
+    """The return value is the library's count, not an echo of the argument.
+
+    Documented as "the thread count that was actually set", and it used to return `n`
+    unconditionally -- so on a serial build set_num_threads(2) claimed 2 while the pool stayed
+    at 1, and a caller sizing work by that number would over-subscribe by the factor it was
+    trying to control. Environment-matrix run 34347810149 surfaced this on Fedora.
+    """
+    orig = bigla.get_num_threads()
+    if orig == 0 or bigla.thread_control_info().set_sym is None:
+        pytest.skip("thread control not available on this backend")
+    try:
+        assert bigla.set_num_threads(2) == bigla.get_num_threads()
+    finally:
+        bigla.set_num_threads(orig)
+
+
+def test_set_num_threads_explicit_roundtrip():
+    orig = _require_resizable_pool()
     bigla.set_num_threads(2)
     assert bigla.get_num_threads() == 2
     bigla.set_num_threads(orig)
@@ -200,9 +236,7 @@ def test_set_num_threads_requires_argument():
 
 
 def test_set_num_threads_round_trip():
-    orig = bigla.get_num_threads()
-    if orig == 0 or bigla.thread_control_info().set_sym is None:
-        pytest.skip("thread control not available on this backend")
+    orig = _require_resizable_pool()
     try:
         assert bigla.set_num_threads(2) == 2
         assert bigla.get_num_threads() == 2
@@ -212,9 +246,7 @@ def test_set_num_threads_round_trip():
 
 def test_num_threads_context_manager_restores():
     """Scoped control, mirroring scipy.fft.set_workers -- including on the exception path."""
-    orig = bigla.get_num_threads()
-    if orig == 0 or bigla.thread_control_info().set_sym is None:
-        pytest.skip("thread control not available on this backend")
+    orig = _require_resizable_pool()
     with bigla.num_threads(2):
         assert bigla.get_num_threads() == 2
     assert bigla.get_num_threads() == orig

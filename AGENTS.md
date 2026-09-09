@@ -69,7 +69,7 @@ Acceptance rule for any fix: a named test that **fails against the tree that pre
 - **Loading is two-pass.** First pass returns only a verified-ILP64 candidate; LP64 ones are
   kept aside and used only if nothing better appears. Returning the first library with LAPACK
   symbols was D3 — MKL stuck in LP64 would shadow a working OpenBLAS64 later in the list.
-- **Probing MKL mutates global state.** `_validate_ilp64` calls `mkl_set_interface_layer(1)`,
+- **Probing MKL mutates global state.** `_validate_ilp64` calls `MKL_Set_Interface_Layer(1)`,
   which changes the layer process-wide — including for a numpy that is MKL-linked. Hence MKL
   is the *last* candidate, and the candidate list must never yield the same soname twice.
 - **`RTLD_LOCAL` is deliberate.** `RTLD_GLOBAL` publishes undecorated `dpotrf_` to everything

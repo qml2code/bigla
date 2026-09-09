@@ -77,7 +77,7 @@ For each: record the module command, the resolved library path, and any
 required environment variables.
 
 - **Intel MKL** (`module load intel` or `module load mkl`)
-  Use `libmkl_rt.so`.  Must call `mkl_set_interface_layer(1)` (ILP64) or
+  Use `libmkl_rt.so`.  Must call `MKL_Set_Interface_Layer(1)` (ILP64) or
   set `MKL_INTERFACE_LAYER=ILP64` **before** the first BLAS call.
   Warning: if numpy in the same process initialised MKL in LP64 mode,
   bigla will warn.  Prefer the OpenBLAS64 library when both are present.
