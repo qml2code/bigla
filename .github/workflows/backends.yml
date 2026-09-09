@@ -108,7 +108,13 @@ jobs:
 
       - name: Run row
         run: |
-          mkdir -p out
+          # 0777: the container writes its diagnose JSON here through the bind mount below,
+          # and not every row runs as root. mambaorg/micromamba runs as `mambauser`
+          # (uid 57439), which cannot write a directory the runner user owns -- the MKL row
+          # failed with "cannot create /out/conda-mkl.json: Permission denied" AFTER its whole
+          # suite had passed. An ephemeral CI scratch directory is the right place to be
+          # permissive; the alternative, forcing --user root, would change what the row tests.
+          mkdir -p out && chmod 0777 out
           docker run --rm \
             -e BIGLA_ROW_ID='${{ matrix.id }}' \
             -e BIGLA_ROW_NAME='${{ matrix.name }}' \
