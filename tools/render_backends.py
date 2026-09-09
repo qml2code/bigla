@@ -78,7 +78,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    # Refuse rather than write an empty table. This tool exists because "a row is a claim
+    # that someone ran diagnose on that machine", and the six committed rows cost nine CI
+    # runs and a container session to produce. Passing the OUTPUT file instead of the input
+    # directory -- `render_backends.py backends.json` -- used to glob nothing, render the
+    # placeholder, overwrite both outputs and exit 0: a typo silently downgrading a verified
+    # record to an empty one, which is the exact inversion of the point of generating it.
+    # Two checks, because they are different mistakes and deserve different messages.
+    if not os.path.isdir(args.indir):
+        raise SystemExit(
+            f"{args.indir!r} is not a directory. Pass the directory of per-row "
+            f"`diagnose --format=json` files, not a single file"
+            + (" -- that is this script's OUTPUT" if args.indir.endswith("backends.json") else "")
+        )
     rows = collect(args.indir)
+    if not rows:
+        raise SystemExit(
+            f"no row JSON found in {args.indir!r}; expected files written by "
+            f"`python -m bigla.diagnose --format=json`. Refusing to overwrite "
+            f"{args.docs} and {args.json_out} with an empty table"
+        )
     table = render(rows)
     with open(args.docs, encoding="utf-8") as fh:
         current = fh.read()

@@ -159,3 +159,44 @@ def test_spec_column_list_matches_the_generated_row():
     with open(os.path.join(ROOT, "docs", "SPEC.md"), encoding="utf-8") as fh:
         line = next(l for l in fh if l.startswith("`environment` |"))
     assert len(line.strip().split("|")) == _cells(_generated_row())
+
+
+# ---------------------------------------------------------------------------
+# render_backends refuses to write an empty table
+#
+# `python tools/render_backends.py backends.json` -- passing the OUTPUT file where the input
+# directory belongs -- used to glob nothing, render the "(no matrix rows collected)"
+# placeholder, overwrite docs/backends.md AND backends.json, and exit 0. A typo silently
+# downgraded six measured rows to none, in a tool whose whole premise is that a row is a
+# claim someone ran diagnose on that machine. Recoverable from git, but only once noticed.
+# ---------------------------------------------------------------------------
+
+
+def _write_targets(tmp_path):
+    """Copies of the two files the tool writes, so a regression cannot touch the real ones."""
+    docs = tmp_path / "backends.md"
+    docs.write_text(
+        "<!-- BEGIN GENERATED ROWS -->\n| keep me |\n<!-- END GENERATED ROWS -->\n",
+        encoding="utf-8",
+    )
+    js = tmp_path / "backends.json"
+    js.write_text('[{"kept": true}]\n', encoding="utf-8")
+    return docs, js
+
+
+@pytest.mark.parametrize("bad", ["a file, not a directory", "an empty directory"])
+def test_render_backends_refuses_to_empty_the_record(tmp_path, bad):
+    docs, js = _write_targets(tmp_path)
+    if bad == "a file, not a directory":
+        indir = tmp_path / "backends.json"  # the reported typo: the tool's own output
+    else:
+        indir = tmp_path / "empty"
+        indir.mkdir()
+
+    with pytest.raises(SystemExit) as exc:
+        _render_backends().main([str(indir), "--docs", str(docs), "--json-out", str(js)])
+
+    assert exc.value.code != 0, f"{bad}: exited 0"
+    # ...and, the point of the guard, wrote nothing.
+    assert "keep me" in docs.read_text(encoding="utf-8"), f"{bad}: clobbered the table"
+    assert "kept" in js.read_text(encoding="utf-8"), f"{bad}: clobbered backends.json"

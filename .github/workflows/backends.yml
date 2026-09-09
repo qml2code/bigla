@@ -25,6 +25,8 @@ jobs:
             name: "manylinux, pip numpy wheel"
             base: python:3.12-slim
             blas: wheel
+            notes: >-
+              the common case: numpy's bundled ILP64 OpenBLAS, reached before any system library
             expect_path: 'numpy\.libs/libscipy_openblas64_'
             expect_decoration: scipy_NAME_64_
             expect_confidence: config-string
@@ -34,6 +36,8 @@ jobs:
             name: "manylinux, scipy-openblas64 package"
             base: python:3.12-slim
             blas: scipy-openblas64
+            notes: >-
+              the documented escape hatch; resolves a different file from the wheel row, ahead of it
             # _candidates() reaches the standalone package BEFORE numpy.libs, so this row
             # resolves a genuinely different file from the row above.
             expect_path: 'scipy_openblas64/lib/'
@@ -45,6 +49,8 @@ jobs:
             name: "Debian trixie, libopenblas64-dev"
             base: debian:trixie
             blas: debian
+            notes: >-
+              BARE decoration, so only openblas_get_config -> USE64BITINT distinguishes it from LP64; the pthread variant, which libopenblas64-dev chose, not us
             # ANSWERED, run 34345832317 (2026-09-09): bare `_`, not `_64_`. The row failed
             # its first execution with `assert 'NAME_' == 'NAME_64_'`, which was the question
             # being asked, and this line now records the answer rather than the guess.
@@ -63,6 +69,8 @@ jobs:
             name: "Fedora 44, openblas-serial64_"
             base: fedora:44
             blas: fedora
+            notes: >-
+              distro numpy goes through FlexiBLAS while bigla binds OpenBLAS64 directly -- two pools by construction; serial build, so threads=1
             expect_path: '^/usr/lib.*openblas64'
             expect_decoration: NAME_64_
             expect_confidence: config-string
@@ -72,16 +80,17 @@ jobs:
             name: "conda-forge, MKL"
             base: mambaorg/micromamba:latest
             blas: mkl
+            notes: >-
+              libmkl_rt is a dispatcher: it loads libmkl_intel_ilp64/core/thread globally itself, so MKL symbols are process-wide whatever mode we dlopen with
             # The only row that reaches the MKL_Set_Interface_Layer branch.
             #
             # NAME_64_, not the NAME_ guessed here originally. MKL's single dynamic library
             # exports `_64`-suffixed ILP64 entry points alongside the LP64 ones, and
             # _DECORATIONS tries ("", "_64_") before ("", "_"), so discovery binds
-            # `dpotrf_64_`. Evidence is indirect but unambiguous: run 34349903390's leak-test
-            # message names the symbol bigla resolved, `dpotrf_64_`, and that string is built
-            # from info.decoration. It has still never been checked by THIS assertion --
-            # tests/long has not once executed on this row, because `set -e` in the container
-            # CMD stops at the fast suite, which has failed on this row every time so far.
+            # `dpotrf_64_`. First inferred from run 34349903390's leak-test message, then
+            # CONFIRMED by this assertion in run 34354219949 -- the first run in which
+            # tests/long executed on this row at all, `set -e` having stopped at the fast
+            # suite every time before that.
             expect_path: 'libmkl_rt'
             expect_decoration: NAME_64_
             expect_confidence: mkl-interface
@@ -91,6 +100,8 @@ jobs:
             name: "Debian trixie, no ILP64 present"
             base: debian:trixie
             blas: none
+            notes: >-
+              the refusal path: no ILP64 anywhere, so the error message is the deliverable
             # The refusal path. No expect_* assertions: the point is that loading RAISES,
             # with a message naming both escape hatches.
             expect_no_backend: "1"
@@ -123,7 +134,7 @@ jobs:
             -e BIGLA_EXPECT_CONFIDENCE='${{ matrix.expect_confidence }}' \
             -e BIGLA_EXPECT_ILP64='${{ matrix.expect_ilp64 }}' \
             -e BIGLA_EXPECT_NO_BACKEND='${{ matrix.expect_no_backend }}' \
-            -e BIGLA_ROW_NOTES='${{ matrix.name }}' \
+            -e BIGLA_ROW_NOTES='${{ matrix.notes }}' \
             -v "$PWD/out:/out" \
             "bigla-row:${{ matrix.id }}"
 

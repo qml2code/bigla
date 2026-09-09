@@ -31,12 +31,12 @@ hand-editing makes the claim cheap.
 <!-- BEGIN GENERATED ROWS -->
 | environment | numpy source | scipy source | library resolved | decoration | ILP64 verified by | max n tested | notes / gotchas |
 |---|---|---|---|---|---|---|---|
-| Debian trixie, libopenblas64-dev | numpy 2.2.4 (blas) | scipy 1.15.3 | `/usr/lib/x86_64-linux-gnu/openblas64-pthread/libopenblas64p-r0.3.29.so` | `NAME_` | config-string: `OpenBLAS 0.3.29  USE64BITINT NO_LAPACKE DYNAMIC_ARCH NO_AFFI` | - | Debian trixie, libopenblas64-dev |
-| Debian trixie, no ILP64 present | numpy 2.2.4 (blas) | scipy not installed | **none found** | `-` | refused: no ILP64 backend | - | Debian trixie, no ILP64 present |
-| Fedora 44, openblas-serial64_ | numpy 2.4.6 (flexiblas) | scipy 1.16.2 | `/usr/lib64/libopenblas64_-r0.3.29.so` | `NAME_64_` | config-string: `OpenBLAS 0.3.29  USE64BITINT DYNAMIC_ARCH NO_AFFINITY USE_LO` | - | Fedora 44, openblas-serial64_ |
-| conda-forge, MKL | numpy 2.5.3 (blas) | scipy 1.18.0 | `/opt/conda/lib/libmkl_rt.so.3` | `NAME_64_` | mkl-interface: `MKL ILP64 interface confirmed` | - | conda-forge, MKL |
-| manylinux, pip numpy wheel | numpy 2.5.3 (scipy-openblas) | scipy 1.18.1 | `/usr/local/lib/python3.12/site-packages/numpy.libs/libscipy_openblas64_-f48b354e.so` | `scipy_NAME_64_` | config-string: `OpenBLAS 0.3.34.106.0  USE64BITINT DYNAMIC_ARCH NO_AFFINITY ` | - | manylinux, pip numpy wheel |
-| manylinux, scipy-openblas64 package | numpy 2.5.3 (scipy-openblas) | scipy 1.18.1 | `/usr/local/lib/python3.12/site-packages/scipy_openblas64/lib/libscipy_openblas64_.so` | `scipy_NAME_64_` | config-string: `OpenBLAS 0.3.34.237.0  USE64BITINT DYNAMIC_ARCH NO_AFFINITY ` | - | manylinux, scipy-openblas64 package |
+| Debian trixie, libopenblas64-dev | numpy 2.2.4 (blas) | scipy 1.15.3 | `/usr/lib/x86_64-linux-gnu/openblas64-pthread/libopenblas64p-r0.3.29.so` | `NAME_` | config-string: `USE64BITINT` | - | BARE decoration, so only openblas_get_config -> USE64BITINT distinguishes it from LP64; the pthread variant, which libopenblas64-dev chose, not us |
+| Debian trixie, no ILP64 present | numpy 2.2.4 (blas) | scipy not installed | **none found** | `-` | refused: no ILP64 backend | - | the refusal path: no ILP64 anywhere, so the error message is the deliverable |
+| Fedora 44, openblas-serial64_ | numpy 2.4.6 (flexiblas) | scipy 1.16.2 | `/usr/lib64/libopenblas64_-r0.3.29.so` | `NAME_64_` | config-string: `USE64BITINT` | - | distro numpy goes through FlexiBLAS while bigla binds OpenBLAS64 directly -- two pools by construction; serial build, so threads=1 |
+| conda-forge, MKL | numpy 2.5.3 (blas) | scipy 1.18.0 | `/opt/conda/lib/libmkl_rt.so.3` | `NAME_64_` | mkl-interface: `MKL ILP64 interface confirmed` | - | libmkl_rt is a dispatcher: it loads libmkl_intel_ilp64/core/thread globally itself, so MKL symbols are process-wide whatever mode we dlopen with |
+| manylinux, pip numpy wheel | numpy 2.5.3 (scipy-openblas) | scipy 1.18.1 | `/usr/local/lib/python3.12/site-packages/numpy.libs/libscipy_openblas64_-f48b354e.so` | `scipy_NAME_64_` | config-string: `USE64BITINT` | - | the common case: numpy's bundled ILP64 OpenBLAS, reached before any system library |
+| manylinux, scipy-openblas64 package | numpy 2.5.3 (scipy-openblas) | scipy 1.18.1 | `/usr/local/lib/python3.12/site-packages/scipy_openblas64/lib/libscipy_openblas64_.so` | `scipy_NAME_64_` | config-string: `USE64BITINT` | - | the documented escape hatch; resolves a different file from the wheel row, ahead of it |
 <!-- END GENERATED ROWS -->
 
 ---

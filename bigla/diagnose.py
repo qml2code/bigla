@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 
 
@@ -137,6 +138,28 @@ def _collect(env: str) -> dict:
     return out
 
 
+# The column is titled "ILP64 verified by", so it must carry the thing that verified it.
+# It used to show config_string[:60], which truncates mid-token -- real strings run 82-91
+# characters, and USE64BITINT survived only by appearing early. A build that placed it past
+# position 60 would have truncated away the very token being attested to. The full string is
+# one backends.json lookup away; this column shows the evidence, not a prefix of it.
+_EVIDENCE_TOKENS = ("USE64BITINT",)
+
+
+def _evidence(d: dict) -> str:
+    """The token that established ILP64, or a word-boundary-truncated config string."""
+    cfg = (d.get("config_string") or "").strip()
+    for token in _EVIDENCE_TOKENS:
+        if re.search(rf"(?<!\w){re.escape(token)}(?!\w)", cfg):
+            return token
+    if not cfg:
+        return "-"
+    if len(cfg) <= 60:
+        return cfg.replace("|", "\\|")
+    head = cfg[:60].rsplit(" ", 1)[0]
+    return (head or cfg[:60]).replace("|", "\\|") + " ..."
+
+
 def _row(d: dict) -> str:
     """One docs/backends.md table row (SPEC 9 columns) from a collected dict."""
 
@@ -148,8 +171,7 @@ def _row(d: dict) -> str:
         verified = "refused: no ILP64 backend"
     else:
         resolved = f"`{d['library_path']}`"
-        cfg_short = cell(d["config_string"])[:60]
-        verified = f"{d['confidence']}: `{cfg_short}`"
+        verified = f"{d['confidence']}: `{_evidence(d)}`"
     return (
         f"| {cell(d['environment'])} "
         f"| numpy {cell(d['numpy_version'])} ({cell(d['numpy_blas'])}) "
