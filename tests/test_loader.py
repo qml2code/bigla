@@ -315,6 +315,31 @@ sym = f"{info.decoration[0]}dpotrf{info.decoration[1]}"
 print(json.dumps({"sym": sym, "before": before[sym], "after": visible(sym), "path": info.path}))
 """
 
+# The control experiment. Loads the SAME library with an explicit RTLD_LOCAL and no bigla
+# involved, so a leak observed here is the library publishing its own symbols -- something
+# RTLD_LOCAL on the outer handle cannot prevent, because it does not govern what a library
+# dlopens for itself. Without this, the main probe blames bigla for it: MKL's libmkl_rt is a
+# dispatcher that opens its implementation libraries on its own terms, and the conda-forge
+# matrix row failed with "the library was opened RTLD_GLOBAL" against a handle that provably
+# was not (test_cdll_loaded_without_rtld_global is the deterministic proof).
+_LOCAL_LOAD_PROBE = r"""
+import ctypes, json, os, sys
+
+
+def visible(sym):
+    try:
+        getattr(ctypes.CDLL(None), sym)
+        return True
+    except (AttributeError, OSError):
+        return False
+
+
+path, sym = sys.argv[1], sys.argv[2]
+before = visible(sym)
+ctypes.CDLL(path, mode=os.RTLD_LOCAL)
+print(json.dumps({"before": before, "after": visible(sym)}))
+"""
+
 
 @pytest.mark.skipif(
     not sys.platform.startswith("linux"), reason="global symbol namespace is dlopen-specific"
@@ -341,7 +366,28 @@ def test_no_global_symbol_leak():
             f"{data['sym']} was already global before bigla loaded "
             "(scipy-openblas64 publishes it on import); not attributable"
         )
-    assert not data["after"], (
+    if not data["after"]:
+        return  # nothing leaked; the common case
+
+    # Something is global that was not before. Before blaming bigla, load the same library
+    # with an explicit RTLD_LOCAL and nothing else in the process: if the symbol still goes
+    # global, the library published it itself and no caller could have stopped it.
+    control = subprocess.run(
+        [sys.executable, "-c", _LOCAL_LOAD_PROBE, data["path"], data["sym"]],
+        capture_output=True,
+        text=True,
+    )
+    assert control.returncode == 0, f"control probe failed:\n{control.stdout}\n{control.stderr}"
+    ctl = json.loads(control.stdout.strip().splitlines()[-1])
+    if ctl["after"] and not ctl["before"]:
+        pytest.skip(
+            f"{data['path']} publishes {data['sym']} globally on its own account -- an "
+            "explicit RTLD_LOCAL load of it leaks the symbol too, so this is the library's "
+            "doing, not bigla's (see test_cdll_loaded_without_rtld_global)"
+        )
+
+    raise AssertionError(
         f"{data['sym']} became visible through the global handle after bigla loaded "
-        f"{data['path']} -- the library was opened RTLD_GLOBAL"
+        f"{data['path']}, and an explicit RTLD_LOCAL load of the same library does NOT "
+        f"leak it -- so bigla's own dlopen published it"
     )

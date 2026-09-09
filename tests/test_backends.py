@@ -182,8 +182,8 @@ def _require_resizable_pool():
     environment, not a defect, so the round-trip tests below skip on it. The skip is driven by
     ``set_num_threads``'s RETURN value, which reports what the library actually has, so a
     backend that silently ignored the setter could not use this path to look healthy: the
-    return value would have to lie first, and test_set_num_threads_reports_the_real_count
-    below is what stops that.
+    return value would have to lie first, and test_set_num_threads_reports_clamping is
+    what stops that.
     """
     orig = bigla.get_num_threads()
     if orig == 0 or bigla.thread_control_info().set_sym is None:
@@ -193,23 +193,6 @@ def _require_resizable_pool():
         pytest.skip(f"single-threaded backend: set_num_threads(2) stayed at {orig}")
     bigla.set_num_threads(orig)
     return orig
-
-
-def test_set_num_threads_reports_the_real_count():
-    """The return value is the library's count, not an echo of the argument.
-
-    Documented as "the thread count that was actually set", and it used to return `n`
-    unconditionally -- so on a serial build set_num_threads(2) claimed 2 while the pool stayed
-    at 1, and a caller sizing work by that number would over-subscribe by the factor it was
-    trying to control. Environment-matrix run 34347810149 surfaced this on Fedora.
-    """
-    orig = bigla.get_num_threads()
-    if orig == 0 or bigla.thread_control_info().set_sym is None:
-        pytest.skip("thread control not available on this backend")
-    try:
-        assert bigla.set_num_threads(2) == bigla.get_num_threads()
-    finally:
-        bigla.set_num_threads(orig)
 
 
 def test_set_num_threads_explicit_roundtrip():
@@ -260,13 +243,25 @@ def test_num_threads_context_manager_restores():
     assert bigla.get_num_threads() == orig
 
 
-def test_set_num_threads_returns_count():
+def test_set_num_threads_reports_clamping():
+    """A backend may give you fewer threads than you asked for, and must say so.
+
+    This asserted `set_num_threads(3) == 3` while the function returned its own argument, so
+    it could not have failed. Both matrix rows that got far enough then contradicted it: MKL
+    returned 2 for a request of 3 (it clamps to the machine's cores) and Fedora's serial
+    build returned 1. Neither is a defect -- but echoing the argument would report 3 in both
+    cases, and a caller sizing work by that number over-subscribes by exactly the factor it
+    was trying to control.
+    """
     orig = bigla.get_num_threads()
-    if orig == 0:
-        pytest.skip("thread count not queryable on this backend")
-    ret = bigla.set_num_threads(3)
-    assert ret == 3
-    bigla.set_num_threads(orig)
+    if orig == 0 or bigla.thread_control_info().set_sym is None:
+        pytest.skip("thread control not available on this backend")
+    try:
+        ret = bigla.set_num_threads(3)
+        assert ret == bigla.get_num_threads(), "return value disagrees with the library"
+        assert ret <= 3, "backend reported more threads than were requested"
+    finally:
+        bigla.set_num_threads(orig)
 
 
 # ---------------------------------------------------------------------------
