@@ -95,7 +95,7 @@ required environment variables.
   a stock arm64 numpy links Accelerate and bundles no OpenBLAS, so the `.dylibs` glob
   matches nothing — and every candidate after it in `_candidates()` is a Linux `.so`
   soname, so discovery has no macOS system-library path whatsoever. Until Accelerate is
-  supported, the answer on macOS is `pip install bigla[openblas]`, which is what the CI
+  supported, the answer on macOS is `pip install scipy-openblas64`, which is what the CI
   macOS leg now uses. Adding `.dylib` sonames to `_candidates()` is untested speculation
   and deliberately not done.
 
@@ -113,9 +113,10 @@ and global visibility would let an undecorated `dpotrf_` be bound by anything lo
 
 If `python -m bigla.diagnose` shows `ilp64: False` or fails to find a library:
 
-1. **`pip install bigla[openblas]`** — pulls `scipy-openblas64`, which ships
-   its own ILP64 OpenBLAS.  This is the always-works answer on any platform
-   where pip works.
+1. **`pip install scipy-openblas64`** — ships its own ILP64 OpenBLAS, which
+   discovery finds ahead of everything else.  This is the always-works answer on
+   any platform where pip works.  (`bigla[openblas]` is the same dependency as an
+   extra, for an install that goes through the package rather than a clone.)
 
 2. **`BIGLA_LIB=/path/to/libopenblas64.so`** — point bigla at any ILP64
    library already on the machine.

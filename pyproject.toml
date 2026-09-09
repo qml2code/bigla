@@ -11,7 +11,7 @@ readme = "README.md"
 keywords = [ "blas", "cholesky", "eigh", "ilp64", "kernel-methods", "lapack", "linalg" ]
 license = { text = "MIT" }
 authors = [
-  { name = "bigla contributors" },
+  { name = "Konstantin Karandashev" },
 ]
 requires-python = ">=3.10"
 classifiers = [
@@ -31,10 +31,12 @@ dependencies = [
 ]
 
 optional-dependencies.dev = [
+  # numpy is deliberately NOT repeated here: extras are additive to `dependencies`, so the base
+  # package already brings it. Listing it again would pin it a second time, and the two pins drift
+  # -- the same reason the formatters below are not listed.
   "bigla[test]",
   # Not a hook -- run by hand (`mypy bigla/`); [tool.mypy] below configures it.
   "mypy",
-  "numpy>=1.26",
   # Formatting and linting are owned entirely by .pre-commit-config.yaml (shared with
   # qml2-dev), which pins its own tool versions in isolated environments. Listing black /
   # isort / flake8 here as well would pin them a second time, and the two pins drift.

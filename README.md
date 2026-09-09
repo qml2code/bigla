@@ -7,9 +7,12 @@ BLAS/LAPACK is already on your system — by default the one that
 NumPy's own wheels ship.  No Fortran compiler, no f2py, no Cython:
 a pure-Python wheel with no build step at all.
 
+```bash
+pip install git+https://github.com/qml2code/bigla
 ```
-pip install bigla
-```
+
+*(Installed from the repository, not from PyPI — see [Installation](#installation) for the
+clone/`make install` route.)*
 
 ---
 
@@ -17,8 +20,11 @@ pip install bigla
 
 `scipy.linalg` links its own LP64 (32-bit integer) OpenBLAS.  That means
 the element count of any operand matrix must fit in a signed 32-bit integer.
-For a square `float64` matrix the ceiling is **46 341 × 46 341** — roughly
-17 GiB.  Go one element wider and `potrf` silently corrupts.
+For a square `float64` matrix that puts the ceiling at **46 341 × 46 341** —
+roughly 17 GiB.  `scipy.linalg.lapack.HAS_ILP64` is `False` in released wheels,
+so one element wider is a matrix that interface cannot address, and the call
+fails.  (Exactly *how* it fails is not something this project has measured at
+that size; see [`docs/status.md`](docs/status.md).)
 
 NumPy's wheels ship `libscipy_openblas64_*.so` built with `USE64BITINT`,
 which has no such limit.  bigla binds that library directly.
@@ -149,10 +155,16 @@ useful for the question it cannot answer: what is *this* handle doing.
 Searched in order:
 
 1. `$BIGLA_LIB` — explicit path, always wins
-2. `scipy_openblas64` package (`pip install bigla[openblas]`)
+2. `scipy_openblas64` package (`pip install scipy-openblas64`)
 3. NumPy's bundled `libscipy_openblas64_*.so` (inside the numpy wheel)
-4. MKL (`libmkl_rt.so`)
-5. System: `libopenblas64_.so`, `libopenblas64.so`, `libflexiblas64.so`
+4. System: `libopenblas64_.so{,.0}`, `libopenblas64.so{,.0}`, `libflexiblas64.so`
+5. MKL (`libmkl_rt.so{,.2,.1}`) — **last**, deliberately
+
+MKL is reached last because *probing* it has a side effect: validating its width calls
+`mkl_set_interface_layer(1)`, which changes the interface layer process-wide — including for a
+NumPy that is itself MKL-linked and running LP64. Since loading is two-pass (a verified-ILP64
+candidate always beats an LP64 one, wherever each appears in the list), the order barely affects
+*selection* any more; it exists to keep that probe from running when something else already works.
 
 If no ILP64 library is found: for `n ≤ 46340` bigla falls back to
 `scipy.linalg`; for larger `n` it raises `BiglaBackendError` with
@@ -164,12 +176,20 @@ See [`docs/backends.md`](docs/backends.md) for the per-platform install matrix.
 
 ## Installation
 
+**bigla is not distributed through PyPI** — `pip install bigla` will not find it.  Install from
+the repository:
+
 ```bash
 # Standard (uses numpy's bundled OpenBLAS64)
-pip install bigla
+pip install git+https://github.com/qml2code/bigla
 
 # Explicit ILP64 OpenBLAS (always works, no system library needed)
-pip install "bigla[openblas]"
+pip install "bigla[openblas] @ git+https://github.com/qml2code/bigla"
+
+# From a clone — editable, with the dev extras (see Development below)
+git clone https://github.com/qml2code/bigla
+cd bigla
+make install
 
 # Override library path
 BIGLA_LIB=/usr/lib/x86_64-linux-gnu/libopenblas64.so python ...

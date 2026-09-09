@@ -31,3 +31,7 @@ out/
 
 # Editor / OS
 .DS_Store
+# vim swap files, named `.<file>.swp` beside the file being edited -- so they sit in the tree
+# while an editor is open and are trivially swept up by `git add -A`. The [a-p] range covers the
+# .swo/.swn/... names vim falls back to when .swp is taken.
+*.sw[a-p]

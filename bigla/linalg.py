@@ -64,7 +64,7 @@ def _check_dim(n: int, func: str) -> None:
         raise BiglaBackendError(
             f"{func}: n={n} exceeds max_dim={info.max_dim} for LP64 backend "
             f"({info.path}).  Install an ILP64 library or "
-            f"`pip install bigla[openblas]`.  See docs/backends.md."
+            f"`pip install scipy-openblas64`.  See docs/backends.md."
         )
 
 

@@ -451,7 +451,9 @@ def _load() -> tuple[ctypes.CDLL, str, tuple[str, str], bool, str, ThreadInfo]:
 
     raise BiglaBackendError(
         "No ILP64 BLAS/LAPACK found.  Tried:\n" + "\n".join(tried) + "\n\n"
-        "Install one with:  pip install bigla[openblas]\n"
+        # Names the dependency, not the extra: bigla is already installed by the time this
+        # raises, so `pip install bigla[openblas]` would resolve bigla itself all over again.
+        "Install one with:  pip install scipy-openblas64\n"
         "or set:            BIGLA_LIB=/path/to/libopenblas64.so\n"
         "See docs/backends.md for platform-specific instructions."
     )
