@@ -16,6 +16,7 @@ Dockerfile fails only at container build time, an hour into a nightly run.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
 
@@ -26,6 +27,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKFLOW = os.path.join(ROOT, ".github", "workflows", "backends.yml")
 DOCKERFILE = os.path.join(ROOT, "Dockerfile")
 BACKENDS_MD = os.path.join(ROOT, "docs", "backends.md")
+BACKENDS_JSON = os.path.join(ROOT, "backends.json")
 
 EXPECTATIONS = (
     "expect_path",
@@ -200,3 +202,55 @@ def test_render_backends_refuses_to_empty_the_record(tmp_path, bad):
     # ...and, the point of the guard, wrote nothing.
     assert "keep me" in docs.read_text(encoding="utf-8"), f"{bad}: clobbered the table"
     assert "kept" in js.read_text(encoding="utf-8"), f"{bad}: clobbered backends.json"
+
+
+# ---------------------------------------------------------------------------
+# backends.yml `notes:` -> BIGLA_ROW_NOTES -> backends.json -> the rendered table
+#
+# The one coupling in this file that nothing pinned, and its first use was already a
+# hand-edit: when per-row notes were introduced, they were transplanted into the committed
+# backends.json rather than waiting for a matrix run, since `notes` is editorial rather than
+# measured. Defensible, but it leaves two silent failure modes -- edit the YAML without a
+# re-run and the table keeps the old prose; edit the JSON without the YAML and the next run
+# reverts it.
+#
+# Scope is deliberate. Only rows present in BOTH files are compared, so ADDING a matrix row
+# does not turn the fast suite red before the nightly has had a chance to run it: a row that
+# has never run belongs in neither backends.json nor the table, which is the whole premise
+# of generating them. A row in backends.json that the matrix no longer defines is stale, and
+# that IS an error.
+# ---------------------------------------------------------------------------
+
+
+def _collected_rows() -> dict[str, dict]:
+    with open(BACKENDS_JSON, encoding="utf-8") as fh:
+        return {r["environment"]: r for r in json.load(fh)}
+
+
+def _flat(text: str) -> str:
+    """Compare prose by words: YAML folds `>-` blocks to single spaces, JSON keeps what it
+    was given, and neither difference is a drift worth failing on."""
+    return " ".join((text or "").split())
+
+
+def test_backends_json_has_no_row_the_matrix_no_longer_defines():
+    names = {r["name"] for r in ROWS}
+    stale = sorted(set(_collected_rows()) - names)
+    assert not stale, f"backends.json rows absent from the matrix: {stale}"
+
+
+def test_row_notes_match_the_matrix_definitions():
+    """`notes` is the only field in backends.json that is authored rather than measured,
+    so it is the only one that can drift from its source without a run to correct it."""
+    collected = _collected_rows()
+    compared = 0
+    for entry in ROWS:
+        row = collected.get(entry["name"])
+        if row is None:
+            continue  # declared but never run; nothing to compare yet
+        assert _flat(row["notes"]) == _flat(entry["notes"]), (
+            f"{entry['id']}: backends.json notes disagree with backends.yml. Re-run the "
+            f"matrix, or correct whichever is wrong."
+        )
+        compared += 1
+    assert compared, "no matrix row appears in backends.json; the coupling is untested"
