@@ -55,8 +55,8 @@ jobs:
             expect_ilp64: "1"
 
           - id: fedora-openblas64
-            name: "Fedora 41, openblas64"
-            base: fedora:41
+            name: "Fedora 44, openblas-serial64_"
+            base: fedora:44
             blas: fedora
             expect_path: '^/usr/lib.*openblas64'
             expect_decoration: NAME_64_
