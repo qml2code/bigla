@@ -95,7 +95,10 @@ def test_no_backend_row_refuses_actionably():
 
     message = str(exc.value)
     assert "docs/backends.md" in message
-    assert "bigla[openblas]" in message
+    # The dependency, not the extra: bigla is necessarily installed by the time this raises,
+    # so `pip install bigla[openblas]` would resolve bigla itself again -- and bigla is not on
+    # PyPI, so it would resolve nothing at all.
+    assert "scipy-openblas64" in message
     assert "BIGLA_LIB" in message
 
 

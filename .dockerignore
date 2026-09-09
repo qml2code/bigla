@@ -1,5 +1,8 @@
 .git
-.github
+# NOT .github: tests/test_matrix_config.py reads the row definitions out of
+# .github/workflows/backends.yml -- that cross-check between the workflow, the Dockerfile and
+# docs/backends.md is the point of the file. Excluding it made every row that reached
+# collection die with FileNotFoundError on /src/.github/workflows/backends.yml.
 **/__pycache__
 .pytest_cache
 .mypy_cache

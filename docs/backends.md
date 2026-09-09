@@ -45,11 +45,22 @@ runs cleanly there and a row is added to the table above.
 
 - **Debian/Ubuntu `libopenblas64-dev`**
   Library: `/usr/lib/x86_64-linux-gnu/libopenblas64.so.0`
-  Open question: is the decoration `_64_` or bare `_`?
+  ~~Open question: is the decoration `_64_` or bare `_`?~~
+  **Answered (CI run 34345832317, 2026-09-09): bare `_`.** The symbols are plain
+  `dpotrf_`, so nothing in the library's *name or decoration* distinguishes it from an
+  LP64 build — `openblas_get_config` → `USE64BITINT` is the only thing that does. This is
+  the one environment in the matrix where the confidence machinery is load-bearing rather
+  than corroborating.
 
-- **Fedora/RHEL `openblas64` package**
-  Install: `dnf install openblas64`
-  Open question: same decoration question.
+- **Fedora `openblas-serial64_` package** (not `openblas64`, which does not exist)
+  Install: `dnf install openblas-serial64_`
+  Library: `/usr/lib64/libopenblas64_.so.0`
+  ~~Open question: same decoration question.~~
+  **Answered (same run): `_64_`.** Fedora splits OpenBLAS by threading model *and* by
+  interface, and the trailing underscore in the package name is what selects the suffixed
+  build: `openblas-serial64` (no underscore) is also ILP64 but exports bare symbols, like
+  Debian's. `serial` avoids pulling in a second thread pool; no `-devel` is needed, since
+  the runtime subpackage ships the versioned soname that discovery opens first.
 
 ### conda-forge
 

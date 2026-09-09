@@ -98,9 +98,17 @@ RUN python3 -m pip install --no-cache-dir --no-deps --break-system-packages -e /
 # the row could reach a single test. Every base here provides `python3`. On micromamba that is
 # the base env's, put on PATH at RUN TIME by the image's own entrypoint (the ARG above is
 # build-time only and does not carry over).
+#
+# TWO invocations, never `pytest /src/tests /src/tests/long`. Passing a parent and its child
+# together is version-dependent: pytest 9 collects both, but pytest 8 -- what the distro rows
+# get from python3-pytest (Debian trixie 8.3.5, Fedora 44 8.4.2) -- keeps only the child and
+# silently drops the parent's own tests. Those rows reported a 9-item run and a green tick
+# while the entire fast suite never executed. This mirrors the Makefile, which already runs
+# `test` and `test-long` as separate targets.
 CMD ["/bin/sh", "-c", "\
 set -e; \
-python3 -m pytest /src/tests /src/tests/long -q; \
+python3 -m pytest /src/tests -q; \
+python3 -m pytest /src/tests/long -q; \
 mkdir -p /out; \
 python3 -m bigla.diagnose --format=json --env \"${BIGLA_ROW_NAME:-unnamed}\" \
   > \"/out/${BIGLA_ROW_ID:-row}.json\"; \

@@ -45,12 +45,17 @@ jobs:
             name: "Debian trixie, libopenblas64-dev"
             base: debian:trixie
             blas: debian
-            # Decoration here is an OPEN QUESTION (docs/backends.md): `_64_` or bare `_`?
-            # The row is expected to fail the first time it runs. That failure is the
-            # answer -- read it off the log and correct this line; do not relax it to a
-            # regex that accepts anything, which would turn the row back into decoration.
+            # ANSWERED, run 34345832317 (2026-09-09): bare `_`, not `_64_`. The row failed
+            # its first execution with `assert 'NAME_' == 'NAME_64_'`, which was the question
+            # being asked, and this line now records the answer rather than the guess.
+            #
+            # This makes Debian the matrix's most valuable row. Its library is ILP64 but its
+            # symbols are indistinguishable from an LP64 build -- so `openblas_get_config` ->
+            # USE64BITINT is the ONLY thing standing between discovery and a silently
+            # wrong-width binding. expect_confidence below is what pins that, and no other row
+            # exercises it (MKL validates through mkl_set_interface_layer instead).
             expect_path: '^/usr/lib/.*libopenblas64'
-            expect_decoration: NAME_64_
+            expect_decoration: NAME_
             expect_confidence: config-string
             expect_ilp64: "1"
 

@@ -70,8 +70,21 @@ def test_naming_a_single_file_inside_collects_it():
 
 
 def test_fast_suite_is_not_narrowed_by_the_policy():
-    """The policy must gate only the two directories, never anything in tests/ itself."""
+    """The policy must gate only the two directories, never anything in tests/ itself.
+
+    Each directory is collected in its OWN run. The obvious spelling --
+    ``_collected("tests", "tests/long", "tests/huge")`` -- measures pytest's handling of a
+    parent argument alongside its children, not this repo's policy, and the two pytest
+    generations disagree about it: 9 collects parent and child, 8 keeps only the child and
+    silently drops the parent's own tests. That difference cost the environment matrix a
+    full run, where the distro rows (python3-pytest: Debian trixie 8.3.5, Fedora 44 8.4.2)
+    reported a 9-item pass while the entire fast suite never executed. Collecting one
+    directory per run asks the question this test means to ask, on every pytest.
+    """
     bare = _collected()
-    everything = _collected("tests", "tests/long", "tests/huge")
-    fast_only = {i for i in everything if not any(f"tests/{d}/" in i for d in OPT_IN)}
+    fast_only = {i for i in _collected("tests") if not any(f"tests/{d}/" in i for d in OPT_IN)}
     assert bare == fast_only
+    # ...and the opt-in directories are reachable, so `bare` is a real subset of the whole
+    # tree rather than equal to it because nothing else exists.
+    for name in OPT_IN:
+        assert _dirs_present(_collected(f"tests/{name}")) == {name}
