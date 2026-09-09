@@ -16,20 +16,21 @@ CI (FIXES §5.6) closed the same day with `.github/workflows/ci.yml`.
 
 ## Open: landed but unexercised
 
-| item | state |
-|---|---|
-| **FIXES §6** — environment matrix | Running since 2026-09-09. **Five of six rows green** as of `44fd49e`; `conda-mkl` is the exception (below). It did its job immediately: it found a segfault reachable by any Debian or MKL user, and it answered the decoration question the repo had been guessing at since the beginning — Debian is bare `NAME_`, Fedora's `openblas-serial64_` is `NAME_64_`. Both are recorded in `docs/backends.md`. |
-| **`conda-mkl` symbol leak** | **Explained and closed as not-a-defect, 2026-09-09.** `dpotrf_64_` does become globally visible after bigla loads `libmkl_rt.so.3` — but `dladdr` reports it as provided by `libmkl_intel_ilp64.so.3`, a file bigla never opened. `libmkl_rt` is a dispatcher: `/proc/self/maps` shows no MKL objects before `backend_info()` and four after (`libmkl_rt` plus `libmkl_core`, `libmkl_intel_ilp64`, `libmkl_intel_thread`), so it loads its own implementation globally. `test_no_global_symbol_leak` now decides attribution by provenance — a symbol from a file bigla did not open cannot have been published by bigla — and skips, naming the provider. Measured in a conda-forge container; the two CI-driven attempts to reproduce the trigger both failed because `MKL_Set_Interface_Layer` only records a preference and does not initialise MKL. The first call that does, for bigla, is `_query_threads`. |
+None. The environment matrix was the last one; see **FIXES §6** below.
 
-`conda-mkl` also carries an expectation that has never been checked: `set -e` in the container
-`CMD` stops at the fast suite, so `tests/long` has never executed on that row, leaving
-`expect_path`, `expect_confidence` and `expect_ilp64` untested. `expect_decoration: NAME_64_`
-was corrected from the leak test's error message rather than from the assertion itself.
+What the matrix found on its way to green, none of which was reachable any other way: a
+segfault in `set_num_threads` on Debian and at *import* on MKL, from calling Fortran-binding
+symbols by value; a `set_num_threads` return value that echoed its argument and so lied on
+any backend that clamps (MKL) or cannot thread at all (Fedora's serial build); and the
+decoration of both distro builds, which the repo had been guessing at since its first commit.
+
+Nothing in the environment matrix is open. The remaining unknowns are the environments it
+cannot reach at all — see below.
 
 ### Deferred: a container with an agent in it, for environment-specific bugs
 
-The MKL leak is the first defect this project cannot reproduce on the authoring machine, and
-the loop it forces — guess, commit, wait for CI, read one bit — is a bad instrument. The
+The MKL leak was the first defect this project could not reproduce on the authoring machine,
+and the loop it forced — guess, commit, wait for CI, read one bit — is a bad instrument. The
 approach to try next time: build the row's image, install Node and `@anthropic-ai/claude-code`
 into it, mount the repo read-write and let an agent work *inside* the environment, committing
 to a branch that is pushed from the host afterwards (a token or SSH key inside a throwaway
@@ -64,6 +65,8 @@ Those have no container form and stay UNVERIFIED in `docs/backends.md` until som
 | **5.4** | `RTLD_GLOBAL` dropped, so undecorated symbols such as `dpotrf_` are not published to everything loaded afterwards. | `test_cdll_loaded_without_rtld_global`, `test_no_global_symbol_leak` |
 | **5.5** | lwork guard | `test_workspace.py` |
 | **FIXES §5.6** | No CI. `.github/workflows/ci.yml` runs lint plus the fast suite over the numpy axis SPEC §10 specifies (2.0 / 2.2 / current x py3.10/3.12/3.13, wheel and standalone `scipy-openblas64`, plus a macOS leg), and uploads each leg's `diagnose --format=json`. | `tests/test_matrix_config.py` pins the row definitions; the workflow itself is exercised by running. |
+| **FIXES §6** — environment matrix | All six rows of run 34354219949 green, 2026-09-09. Every row runs the fast suite *and* `tests/long`, so each asserts the resolved path, decoration, confidence and ILP64 verdict of its own environment; `docs/backends.md`'s table is generated from that run and the hand-entered seed row is gone. | `tests/long/test_env_matrix.py` per row; `tests/test_matrix_config.py` pins the row definitions |
+| **`conda-mkl` symbol leak** | Not a defect. `dpotrf_64_` does go global after bigla loads `libmkl_rt.so.3`, but `dladdr` reports the provider as `libmkl_intel_ilp64.so.3` — a file bigla never opened. `libmkl_rt` is a dispatcher and loads its own implementation globally on the first call that initialises MKL (for bigla, `_query_threads`; `MKL_Set_Interface_Layer` only records a preference, which is why two attempts to reproduce it in-process failed). | `test_no_global_symbol_leak`, which now attributes by provenance and skips naming the provider |
 
 ### How D3/D4/5.4 were verified red
 

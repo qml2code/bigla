@@ -31,8 +31,40 @@ hand-editing makes the claim cheap.
 <!-- BEGIN GENERATED ROWS -->
 | environment | numpy source | scipy source | library resolved | decoration | ILP64 verified by | max n tested | notes / gotchas |
 |---|---|---|---|---|---|---|---|
-| manylinux, x86_64 | pip numpy 2.4.4 | pip scipy 1.17.1 | `<site>/numpy.libs/libscipy_openblas64_-*.so` | `scipy_NAME_64_` | config-string: `USE64BITINT` | (huge test not yet run) | scipy's own LAPACK is LP64 (`HAS_ILP64 is False`); we bind numpy's bundled library, not scipy's |
+| Debian trixie, libopenblas64-dev | numpy 2.2.4 (blas) | scipy 1.15.3 | `/usr/lib/x86_64-linux-gnu/openblas64-pthread/libopenblas64p-r0.3.29.so` | `NAME_` | config-string: `OpenBLAS 0.3.29  USE64BITINT NO_LAPACKE DYNAMIC_ARCH NO_AFFI` | - | Debian trixie, libopenblas64-dev |
+| Debian trixie, no ILP64 present | numpy 2.2.4 (blas) | scipy not installed | **none found** | `-` | refused: no ILP64 backend | - | Debian trixie, no ILP64 present |
+| Fedora 44, openblas-serial64_ | numpy 2.4.6 (flexiblas) | scipy 1.16.2 | `/usr/lib64/libopenblas64_-r0.3.29.so` | `NAME_64_` | config-string: `OpenBLAS 0.3.29  USE64BITINT DYNAMIC_ARCH NO_AFFINITY USE_LO` | - | Fedora 44, openblas-serial64_ |
+| conda-forge, MKL | numpy 2.5.3 (blas) | scipy 1.18.0 | `/opt/conda/lib/libmkl_rt.so.3` | `NAME_64_` | mkl-interface: `MKL ILP64 interface confirmed` | - | conda-forge, MKL |
+| manylinux, pip numpy wheel | numpy 2.5.3 (scipy-openblas) | scipy 1.18.1 | `/usr/local/lib/python3.12/site-packages/numpy.libs/libscipy_openblas64_-f48b354e.so` | `scipy_NAME_64_` | config-string: `OpenBLAS 0.3.34.106.0  USE64BITINT DYNAMIC_ARCH NO_AFFINITY ` | - | manylinux, pip numpy wheel |
+| manylinux, scipy-openblas64 package | numpy 2.5.3 (scipy-openblas) | scipy 1.18.1 | `/usr/local/lib/python3.12/site-packages/scipy_openblas64/lib/libscipy_openblas64_.so` | `scipy_NAME_64_` | config-string: `OpenBLAS 0.3.34.237.0  USE64BITINT DYNAMIC_ARCH NO_AFFINITY ` | - | manylinux, scipy-openblas64 package |
 <!-- END GENERATED ROWS -->
+
+---
+
+## Notes on the verified environments
+
+The table above says *what* resolved. These are the things that cost effort to find out and
+that a path alone does not convey.
+
+- **Debian/Ubuntu `libopenblas64-dev`** — resolved path is
+  `/usr/lib/x86_64-linux-gnu/openblas64-pthread/libopenblas64p-r0.3.29.so`, reached by the
+  `libopenblas64.so.0` soname. (This file previously documented the soname itself as the
+  path; the matrix corrected it.)
+  **Decoration is bare `NAME_`.** The symbols are plain `dpotrf_`, so nothing in the
+  library's *name or decoration* distinguishes it from an LP64 build —
+  `openblas_get_config` → `USE64BITINT` is the only thing that does. This is the one
+  environment in the matrix where the confidence machinery is load-bearing rather than
+  corroborating, which makes it the row to keep if any are ever dropped.
+
+- **Fedora `openblas-serial64_`** — *not* `openblas64`, which is not a package name at all.
+  Fedora splits OpenBLAS by threading model **and** by interface, and the trailing
+  underscore selects the suffixed build:
+  `openblas-serial` is LP64, `openblas-serial64` is ILP64 with **bare** symbols (like
+  Debian's), `openblas-serial64_` is ILP64 with the `64_` suffix — decoration `NAME_64_`.
+  No `-devel` is needed: the runtime subpackage ships the versioned soname discovery opens
+  first. Note the row's numpy comes from the distro and goes through **FlexiBLAS**, so numpy
+  and bigla are using different libraries in that container — the two-pool situation the
+  README warns about, here by construction.
 
 ---
 
@@ -43,33 +75,18 @@ runs cleanly there and a row is added to the table above.
 
 ### Linux distros
 
-- **Debian/Ubuntu `libopenblas64-dev`**
-  Library: `/usr/lib/x86_64-linux-gnu/libopenblas64.so.0`
-  ~~Open question: is the decoration `_64_` or bare `_`?~~
-  **Answered (CI run 34345832317, 2026-09-09): bare `_`.** The symbols are plain
-  `dpotrf_`, so nothing in the library's *name or decoration* distinguishes it from an
-  LP64 build — `openblas_get_config` → `USE64BITINT` is the only thing that does. This is
-  the one environment in the matrix where the confidence machinery is load-bearing rather
-  than corroborating.
-
-- **Fedora `openblas-serial64_` package** (not `openblas64`, which does not exist)
-  Install: `dnf install openblas-serial64_`
-  Library: `/usr/lib64/libopenblas64_.so.0`
-  ~~Open question: same decoration question.~~
-  **Answered (same run): `_64_`.** Fedora splits OpenBLAS by threading model *and* by
-  interface, and the trailing underscore in the package name is what selects the suffixed
-  build: `openblas-serial64` (no underscore) is also ILP64 but exports bare symbols, like
-  Debian's. `serial` avoids pulling in a second thread pool; no `-devel` is needed, since
-  the runtime subpackage ships the versioned soname that discovery opens first.
+None outstanding — Debian and Fedora are both verified; see the table and the notes
+above it.
 
 ### conda-forge
 
-numpy on conda-forge links the LP64 BLAS stack by default.
-**Does conda-forge ship an ILP64 OpenBLAS at all?**
+numpy on conda-forge links the LP64 BLAS stack by default. The `conda-mkl` matrix row
+verifies one answer — conda-forge's **MKL** is ILP64-capable and bigla binds it
+(`libmkl_rt.so.3`, `NAME_64_`, confirmed through the interface layer).
 
-- If yes: identify the package name and library path.
-- If no: the answer is `pip install scipy-openblas64` into the conda env
-  (should work; test it).  Add the resulting path to the table.
+Still open: **does conda-forge ship an ILP64 OpenBLAS?** If yes, identify the package and
+path. If no, `pip install scipy-openblas64` into the conda env is the answer (it works on
+manylinux; untested inside a conda env).
 
 ### HPC modules
 
@@ -165,3 +182,8 @@ If `python -m bigla.diagnose` shows `ilp64: False` or fails to find a library:
   matrix run replaces it.
 - 2026-09-08: table placed under generation markers; `Dockerfile` + `.github/workflows/`
   added, so rows are collected rather than transcribed.
+- 2026-09-09: **the seed row is gone.** All six rows of run 34354219949 are generated, and
+  every one of them ran `tests/long`, so each line is backed by assertions on the resolved
+  path, decoration, confidence and ILP64 verdict rather than by a paste. Debian and Fedora
+  moved out of UNVERIFIED; Debian's documented path was wrong (the soname, not the file it
+  resolves to) and the matrix corrected it.
