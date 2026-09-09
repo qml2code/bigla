@@ -283,7 +283,20 @@ def test_cdll_loaded_without_rtld_global(monkeypatch):
 # Run in a subprocess: the global namespace is process-wide and cannot be un-polluted, so
 # the "before" measurement has to happen in a process where nothing has loaded a BLAS yet.
 _LEAK_PROBE = r"""
-import ctypes, json
+import ctypes, json, os
+
+
+class DlInfo(ctypes.Structure):
+    _fields_ = [
+        ("dli_fname", ctypes.c_char_p),
+        ("dli_fbase", ctypes.c_void_p),
+        ("dli_sname", ctypes.c_char_p),
+        ("dli_saddr", ctypes.c_void_p),
+    ]
+
+
+_dl = ctypes.CDLL(None)
+_dl.dladdr.argtypes = [ctypes.c_void_p, ctypes.POINTER(DlInfo)]
 
 
 def visible(sym):
@@ -292,6 +305,18 @@ def visible(sym):
         return True
     except (AttributeError, OSError):
         return False
+
+
+def provider(sym):
+    # Which FILE provides `sym` in the global namespace, via dladdr(), or None.
+    try:
+        fn = getattr(ctypes.CDLL(None), sym)
+    except (AttributeError, OSError):
+        return None
+    info = DlInfo()
+    if _dl.dladdr(ctypes.cast(fn, ctypes.c_void_p), ctypes.byref(info)) and info.dli_fname:
+        return os.path.realpath(info.dli_fname.decode())
+    return None
 
 
 # Import, up front, everything bigla's own discovery imports. scipy_openblas64 publishes
@@ -312,7 +337,13 @@ from bigla._backend import _DECORATIONS, backend_info
 before = {f"{p}dpotrf{s}": visible(f"{p}dpotrf{s}") for p, s in _DECORATIONS}
 info = backend_info()  # the load happens here
 sym = f"{info.decoration[0]}dpotrf{info.decoration[1]}"
-print(json.dumps({"sym": sym, "before": before[sym], "after": visible(sym), "path": info.path}))
+print(json.dumps({
+    "sym": sym,
+    "before": before[sym],
+    "after": visible(sym),
+    "path": os.path.realpath(info.path),
+    "provider": provider(sym),
+}))
 """
 
 # The control experiment: repeat what bigla does to the library, with an EXPLICIT RTLD_LOCAL
@@ -341,6 +372,14 @@ def visible(sym):
 
 path, sym = sys.argv[1], sys.argv[2]
 stages = {"before": visible(sym)}
+
+# numpy first, as the main probe does. On a conda-forge MKL row numpy IS MKL-linked, so
+# importing it loads libmkl_rt into the process before anything here opens it -- and a
+# dlopen of an object already present behaves differently from a first load. Leaving this
+# out was the remaining difference between the two processes.
+import numpy  # noqa: F401
+
+stages["after_numpy"] = visible(sym)
 
 lib = ctypes.CDLL(path, mode=os.RTLD_LOCAL)
 stages["after_open"] = visible(sym)
@@ -402,6 +441,27 @@ def test_no_global_symbol_leak():
     if not data["after"]:
         return  # nothing leaked; the common case
 
+    # Attribution, decided by WHICH FILE provides the symbol rather than by reproducing
+    # whatever triggered its publication. If it comes from a file bigla never opened, bigla
+    # cannot have published it -- the library it did open loaded that file itself.
+    #
+    # This is the MKL case, measured in a conda-forge container on 2026-09-09: bigla opens
+    # libmkl_rt.so.3 (RTLD_LOCAL, per test_cdll_loaded_without_rtld_global), and dladdr
+    # reports dpotrf_64_ as coming from libmkl_intel_ilp64.so.3 -- one of three
+    # implementation libraries (with libmkl_core, libmkl_intel_thread) that appear in
+    # /proc/self/maps only after backend_info(). libmkl_rt is a dispatcher and loads them
+    # globally on the first real API call. The trigger is NOT MKL_Set_Interface_Layer, which
+    # only records a preference; it is the first call that initialises MKL, which for bigla
+    # is _query_threads. Two earlier attempts to reproduce it in a control probe failed for
+    # exactly that reason, which is why attribution is settled by provenance instead.
+    if data.get("provider") and data["provider"] != data["path"]:
+        pytest.skip(
+            f"{data['sym']} is provided by {data['provider']}, which bigla never opened -- "
+            f"bigla opened {data['path']}, and that library loaded the provider itself. "
+            f"Not something a caller can prevent; see test_cdll_loaded_without_rtld_global "
+            f"for bigla's own guarantee."
+        )
+
     # Something is global that was not before. Before blaming bigla, load the same library
     # with an explicit RTLD_LOCAL and nothing else in the process: if the symbol still goes
     # global, the library published it itself and no caller could have stopped it.
@@ -414,7 +474,12 @@ def test_no_global_symbol_leak():
     ctl = json.loads(control.stdout.strip().splitlines()[-1])
     if not ctl["before"]:
         leaked_at = next(
-            (stage for stage in ("after_open", "after_dlsym", "after_call") if ctl[stage]), None
+            (
+                stage
+                for stage in ("after_numpy", "after_open", "after_dlsym", "after_call")
+                if ctl[stage]
+            ),
+            None,
         )
         if leaked_at is not None:
             pytest.skip(

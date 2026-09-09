@@ -82,6 +82,27 @@ required environment variables.
   Warning: if numpy in the same process initialised MKL in LP64 mode,
   bigla will warn.  Prefer the OpenBLAS64 library when both are present.
 
+  Two gotchas measured in a conda-forge container on 2026-09-09:
+
+  **`libmkl_rt` publishes MKL's symbols globally, and nothing can stop it.**
+  It is a dispatcher. bigla opens it `RTLD_LOCAL`, but on the first call that
+  *initialises* MKL it loads `libmkl_intel_ilp64`, `libmkl_core` and
+  `libmkl_intel_thread` itself, globally — `/proc/self/maps` shows no MKL
+  objects before `backend_info()` and four after, and `dladdr` reports
+  `dpotrf_64_` as coming from `libmkl_intel_ilp64.so.3`, which bigla never
+  opened.  So on an MKL backend, undecorated MKL symbols *are* visible
+  process-wide however carefully you dlopen.  If that matters to you, use the
+  OpenBLAS64 path instead.
+
+  **`MKL_Set_Interface_Layer` does not initialise MKL**, it only records a
+  preference; the implementation libraries load on the first real API call
+  (for bigla, the thread-count query).  Worth knowing before writing anything
+  that tries to observe MKL's loading behaviour.
+
+  Decoration is `NAME_64_`: MKL's single dynamic library exports `_64`-suffixed
+  ILP64 entry points beside the LP64 ones, and `_DECORATIONS` reaches
+  `("", "_64_")` before `("", "_")`.
+
 - **Cray LibSci ILP64**
   Usually `libsci_cray_mp.so`; needs `CRAY_CPU_TARGET` set.
   Open question: does Cray LibSci use the `_64_` suffix?

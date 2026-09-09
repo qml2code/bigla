@@ -18,14 +18,31 @@ CI (FIXES §5.6) closed the same day with `.github/workflows/ci.yml`.
 
 | item | state |
 |---|---|
-| **FIXES §6** — environment matrix | The mechanism is complete: `Dockerfile` (six provenance rows by build arg), `.github/workflows/backends.yml`, `tools/matrix.py` to reproduce a row locally, `tools/render_backends.py` to collect rows into `backends.json` and regenerate the `docs/backends.md` table, and `tests/long/test_env_matrix.py` asserting per row *which backend was resolved*. **No container row has ever run.** The authoring machine has no usable docker daemon, so the first execution is the first nightly. Until then `docs/backends.md` still has exactly one row. |
+| **FIXES §6** — environment matrix | Running since 2026-09-09. **Five of six rows green** as of `44fd49e`; `conda-mkl` is the exception (below). It did its job immediately: it found a segfault reachable by any Debian or MKL user, and it answered the decoration question the repo had been guessing at since the beginning — Debian is bare `NAME_`, Fedora's `openblas-serial64_` is `NAME_64_`. Both are recorded in `docs/backends.md`. |
+| **`conda-mkl` symbol leak** | **Explained and closed as not-a-defect, 2026-09-09.** `dpotrf_64_` does become globally visible after bigla loads `libmkl_rt.so.3` — but `dladdr` reports it as provided by `libmkl_intel_ilp64.so.3`, a file bigla never opened. `libmkl_rt` is a dispatcher: `/proc/self/maps` shows no MKL objects before `backend_info()` and four after (`libmkl_rt` plus `libmkl_core`, `libmkl_intel_ilp64`, `libmkl_intel_thread`), so it loads its own implementation globally. `test_no_global_symbol_leak` now decides attribution by provenance — a symbol from a file bigla did not open cannot have been published by bigla — and skips, naming the provider. Measured in a conda-forge container; the two CI-driven attempts to reproduce the trigger both failed because `MKL_Set_Interface_Layer` only records a preference and does not initialise MKL. The first call that does, for bigla, is `_query_threads`. |
 
-Two of the six rows are expected to **fail on their first run**, and that is the design:
-`debian-openblas64` and `fedora-openblas64` carry the decoration this repo has been guessing
-at since the beginning (`docs/backends.md` lists it as an open question). The row asserts
-`NAME_64_`; if the distro build is bare `NAME_`, the row goes red and the log carries the
-answer. Read it off and correct the expectation — **do not** relax the pattern to something
-that accepts either, which converts the row back into decoration.
+`conda-mkl` also carries an expectation that has never been checked: `set -e` in the container
+`CMD` stops at the fast suite, so `tests/long` has never executed on that row, leaving
+`expect_path`, `expect_confidence` and `expect_ilp64` untested. `expect_decoration: NAME_64_`
+was corrected from the leak test's error message rather than from the assertion itself.
+
+### Deferred: a container with an agent in it, for environment-specific bugs
+
+The MKL leak is the first defect this project cannot reproduce on the authoring machine, and
+the loop it forces — guess, commit, wait for CI, read one bit — is a bad instrument. The
+approach to try next time: build the row's image, install Node and `@anthropic-ai/claude-code`
+into it, mount the repo read-write and let an agent work *inside* the environment, committing
+to a branch that is pushed from the host afterwards (a token or SSH key inside a throwaway
+container is the part to avoid).
+
+It is deliberately **not** set up now, and the MKL leak is the evidence for both halves of that.
+Three CI rounds returned one bit each and produced two wrong hypotheses; a single `docker run`
+of a ~40-line script printing `dladdr` provenance and `/proc/self/maps` answered it outright.
+So: a container is the right instrument, an agent inside it was not needed here. What would
+justify the machinery is the exploratory case — an architecture that cannot be reached from
+here at all, where the work is many small experiments rather than one script:
+`--platform linux/arm64`, or macOS Accelerate, where `_candidates()` has no system-library
+path whatsoever and `docs/backends.md` still lists the question as open.
 
 What the matrix still cannot tell you: whether any of this works on macOS Accelerate,
 Windows, or the HPC module stacks (Cray LibSci, ARM Performance Libraries, NVIDIA nvpl).
