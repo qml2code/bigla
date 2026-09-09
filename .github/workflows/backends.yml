@@ -72,9 +72,18 @@ jobs:
             name: "conda-forge, MKL"
             base: mambaorg/micromamba:latest
             blas: mkl
-            # The only row that reaches the mkl_set_interface_layer branch.
+            # The only row that reaches the MKL_Set_Interface_Layer branch.
+            #
+            # NAME_64_, not the NAME_ guessed here originally. MKL's single dynamic library
+            # exports `_64`-suffixed ILP64 entry points alongside the LP64 ones, and
+            # _DECORATIONS tries ("", "_64_") before ("", "_"), so discovery binds
+            # `dpotrf_64_`. Evidence is indirect but unambiguous: run 34349903390's leak-test
+            # message names the symbol bigla resolved, `dpotrf_64_`, and that string is built
+            # from info.decoration. It has still never been checked by THIS assertion --
+            # tests/long has not once executed on this row, because `set -e` in the container
+            # CMD stops at the fast suite, which has failed on this row every time so far.
             expect_path: 'libmkl_rt'
-            expect_decoration: NAME_
+            expect_decoration: NAME_64_
             expect_confidence: mkl-interface
             expect_ilp64: "1"
 

@@ -315,13 +315,18 @@ sym = f"{info.decoration[0]}dpotrf{info.decoration[1]}"
 print(json.dumps({"sym": sym, "before": before[sym], "after": visible(sym), "path": info.path}))
 """
 
-# The control experiment. Loads the SAME library with an explicit RTLD_LOCAL and no bigla
-# involved, so a leak observed here is the library publishing its own symbols -- something
-# RTLD_LOCAL on the outer handle cannot prevent, because it does not govern what a library
-# dlopens for itself. Without this, the main probe blames bigla for it: MKL's libmkl_rt is a
-# dispatcher that opens its implementation libraries on its own terms, and the conda-forge
-# matrix row failed with "the library was opened RTLD_GLOBAL" against a handle that provably
-# was not (test_cdll_loaded_without_rtld_global is the deterministic proof).
+# The control experiment: repeat what bigla does to the library, with an EXPLICIT RTLD_LOCAL
+# and no bigla in the process. A symbol that goes global here went global despite a local
+# handle, so the library published it and no caller could have prevented it.
+#
+# It measures in stages because merely opening the library is not a fair control. bigla also
+# resolves a symbol (_probe_decoration) and calls into the library (_validate_ilp64), and a
+# DISPATCHER such as MKL's libmkl_rt loads its implementation libraries lazily -- on first
+# use, not at dlopen. A control that only opened the file therefore found no leak and blamed
+# bigla for one, which is exactly the wrong answer given
+# test_cdll_loaded_without_rtld_global proves no call site passes RTLD_GLOBAL. Reporting the
+# stage at which visibility flips also says WHAT triggered it, which is the part worth
+# recording in docs/backends.md.
 _LOCAL_LOAD_PROBE = r"""
 import ctypes, json, os, sys
 
@@ -335,9 +340,37 @@ def visible(sym):
 
 
 path, sym = sys.argv[1], sys.argv[2]
-before = visible(sym)
-ctypes.CDLL(path, mode=os.RTLD_LOCAL)
-print(json.dumps({"before": before, "after": visible(sym)}))
+stages = {"before": visible(sym)}
+
+lib = ctypes.CDLL(path, mode=os.RTLD_LOCAL)
+stages["after_open"] = visible(sym)
+
+# dlsym, as _probe_decoration does.
+try:
+    getattr(lib, sym)
+except AttributeError:
+    pass
+stages["after_dlsym"] = visible(sym)
+
+# Call into it, as _validate_ilp64 does -- the step that makes a lazy dispatcher dispatch.
+for name, call in (
+    ("MKL_Set_Interface_Layer", lambda fn: fn(ctypes.c_int(1))),
+    ("openblas_get_config64_", lambda fn: fn()),
+    ("openblas_get_config", lambda fn: fn()),
+):
+    try:
+        fn = getattr(lib, name)
+    except AttributeError:
+        continue
+    fn.restype = ctypes.c_char_p if "config" in name else ctypes.c_int
+    try:
+        call(fn)
+    except Exception:
+        pass
+    break
+stages["after_call"] = visible(sym)
+
+print(json.dumps(stages))
 """
 
 
@@ -379,15 +412,20 @@ def test_no_global_symbol_leak():
     )
     assert control.returncode == 0, f"control probe failed:\n{control.stdout}\n{control.stderr}"
     ctl = json.loads(control.stdout.strip().splitlines()[-1])
-    if ctl["after"] and not ctl["before"]:
-        pytest.skip(
-            f"{data['path']} publishes {data['sym']} globally on its own account -- an "
-            "explicit RTLD_LOCAL load of it leaks the symbol too, so this is the library's "
-            "doing, not bigla's (see test_cdll_loaded_without_rtld_global)"
+    if not ctl["before"]:
+        leaked_at = next(
+            (stage for stage in ("after_open", "after_dlsym", "after_call") if ctl[stage]), None
         )
+        if leaked_at is not None:
+            pytest.skip(
+                f"{data['path']} publishes {data['sym']} globally on its own account: an "
+                f"explicit RTLD_LOCAL load leaks it at stage {leaked_at!r}, with no bigla in "
+                f"the process. Not something a caller can prevent -- see "
+                f"test_cdll_loaded_without_rtld_global for bigla's own guarantee."
+            )
 
     raise AssertionError(
         f"{data['sym']} became visible through the global handle after bigla loaded "
-        f"{data['path']}, and an explicit RTLD_LOCAL load of the same library does NOT "
-        f"leak it -- so bigla's own dlopen published it"
+        f"{data['path']}, but an explicit RTLD_LOCAL load of the same library does not leak "
+        f"it at any stage ({ctl}) -- so bigla's own dlopen published it"
     )
