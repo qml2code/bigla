@@ -111,13 +111,38 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build
+        # Same rule as Run row below: matrix values arrive through `env:`, never spliced into
+        # the script. These particular values are constrained identifiers today, but the rule
+        # is worth more than the exception, and tests/test_matrix_config.py enforces it.
+        env:
+          BASE_IMAGE: ${{ matrix.base }}
+          BLAS_SOURCE: ${{ matrix.blas }}
+          ROW_ID: ${{ matrix.id }}
         run: |
           docker build \
-            --build-arg BASE_IMAGE=${{ matrix.base }} \
-            --build-arg BLAS_SOURCE=${{ matrix.blas }} \
-            -t "bigla-row:${{ matrix.id }}" .
+            --build-arg "BASE_IMAGE=$BASE_IMAGE" \
+            --build-arg "BLAS_SOURCE=$BLAS_SOURCE" \
+            -t "bigla-row:$ROW_ID" .
 
       - name: Run row
+        # Matrix values reach the shell through `env:`, never by `${{ }}` interpolation into
+        # the script. Interpolation splices the raw text in before bash parses it, so a value
+        # containing an apostrophe ends the single-quoted argument: the notes added for
+        # pip-numpy-wheel begin "the common case: numpy's bundled ILP64 OpenBLAS", and the
+        # nightly died at `line 16: unexpected EOF while looking for matching \`''` -- a shell
+        # syntax error, before docker was reached. `notes` is free-form prose written by a
+        # human, so this recurs by construction; the env block is also what GitHub recommends
+        # against script injection generally. `docker run -e NAME` (no `=value`) forwards the
+        # variable from this environment, so nothing is quoted twice.
+        env:
+          BIGLA_ROW_ID: ${{ matrix.id }}
+          BIGLA_ROW_NAME: ${{ matrix.name }}
+          BIGLA_EXPECT_PATH_RE: ${{ matrix.expect_path }}
+          BIGLA_EXPECT_DECORATION: ${{ matrix.expect_decoration }}
+          BIGLA_EXPECT_CONFIDENCE: ${{ matrix.expect_confidence }}
+          BIGLA_EXPECT_ILP64: ${{ matrix.expect_ilp64 }}
+          BIGLA_EXPECT_NO_BACKEND: ${{ matrix.expect_no_backend }}
+          BIGLA_ROW_NOTES: ${{ matrix.notes }}
         run: |
           # 0777: the container writes its diagnose JSON here through the bind mount below,
           # and not every row runs as root. mambaorg/micromamba runs as `mambauser`
@@ -127,16 +152,16 @@ jobs:
           # permissive; the alternative, forcing --user root, would change what the row tests.
           mkdir -p out && chmod 0777 out
           docker run --rm \
-            -e BIGLA_ROW_ID='${{ matrix.id }}' \
-            -e BIGLA_ROW_NAME='${{ matrix.name }}' \
-            -e BIGLA_EXPECT_PATH_RE='${{ matrix.expect_path }}' \
-            -e BIGLA_EXPECT_DECORATION='${{ matrix.expect_decoration }}' \
-            -e BIGLA_EXPECT_CONFIDENCE='${{ matrix.expect_confidence }}' \
-            -e BIGLA_EXPECT_ILP64='${{ matrix.expect_ilp64 }}' \
-            -e BIGLA_EXPECT_NO_BACKEND='${{ matrix.expect_no_backend }}' \
-            -e BIGLA_ROW_NOTES='${{ matrix.notes }}' \
+            -e BIGLA_ROW_ID \
+            -e BIGLA_ROW_NAME \
+            -e BIGLA_EXPECT_PATH_RE \
+            -e BIGLA_EXPECT_DECORATION \
+            -e BIGLA_EXPECT_CONFIDENCE \
+            -e BIGLA_EXPECT_ILP64 \
+            -e BIGLA_EXPECT_NO_BACKEND \
+            -e BIGLA_ROW_NOTES \
             -v "$PWD/out:/out" \
-            "bigla-row:${{ matrix.id }}"
+            "bigla-row:$BIGLA_ROW_ID"
 
       - uses: actions/upload-artifact@v4
         with:

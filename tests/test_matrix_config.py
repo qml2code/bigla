@@ -19,6 +19,7 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 
 import pytest
 import yaml
@@ -254,3 +255,55 @@ def test_row_notes_match_the_matrix_definitions():
         )
         compared += 1
     assert compared, "no matrix row appears in backends.json; the coupling is untested"
+
+
+# ---------------------------------------------------------------------------
+# Matrix values must not be interpolated into shell scripts.
+#
+# `${{ }}` splices raw text in BEFORE bash parses the script, so a value containing a quote
+# ends the argument it was meant to sit inside. The per-row notes begin "the common case:
+# numpy's bundled ILP64 OpenBLAS ...", and the nightly of 2026-09-10 died on the
+# pip-numpy-wheel row with `unexpected EOF while looking for matching \`''` -- a shell syntax
+# error, before docker ran at all. Only that row had an apostrophe.
+#
+# `notes` is free-form prose a human writes, so this recurs by construction unless the shape
+# is banned. Values belong in the step's `env:` block, which is also GitHub's own advice
+# against script injection.
+# ---------------------------------------------------------------------------
+
+_INTERPOLATION = re.compile(r"\$\{\{[^}]*\}\}")
+
+
+def _workflow_steps() -> list[dict]:
+    with open(WORKFLOW, encoding="utf-8") as fh:
+        return yaml.safe_load(fh)["jobs"]["row"]["steps"]
+
+
+def test_no_matrix_value_is_interpolated_into_a_run_script():
+    offenders = []
+    for step in _workflow_steps():
+        for hit in _INTERPOLATION.findall(step.get("run", "")):
+            offenders.append(f"{step.get('name', '<unnamed>')}: {hit}")
+    assert not offenders, (
+        "pass these through the step's `env:` block instead -- interpolating into `run:` "
+        f"breaks on any value containing a quote: {offenders}"
+    )
+
+
+def test_every_row_note_survives_a_shell_round_trip():
+    """The values themselves, checked directly: prose reaches the container intact.
+
+    Complements the test above -- that one bans the dangerous shape, this one confirms the
+    data is actually deliverable, so a note containing something no quoting survives would be
+    caught even if the shape were changed again.
+    """
+    for row in ROWS:
+        note = row["notes"]
+        proof = subprocess.run(
+            ["bash", "-c", 'printf "%s" "$BIGLA_ROW_NOTES"'],
+            env={"BIGLA_ROW_NOTES": note, "PATH": os.environ.get("PATH", "")},
+            capture_output=True,
+            text=True,
+        )
+        assert proof.returncode == 0, f"{row['id']}: {proof.stderr.strip()}"
+        assert proof.stdout == note, f"{row['id']}: note was mangled in transit"
