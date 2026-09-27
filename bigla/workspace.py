@@ -85,3 +85,39 @@ class Workspace:
     def for_potrf(cls, n: int, dtype=np.float64) -> "Workspace":
         """Pre-allocate a Workspace for potrf(n) (no-op; potrf needs no scratch)."""
         return cls()
+
+    @classmethod
+    def for_getrf(cls, n: int, dtype=np.float64) -> "Workspace":
+        """Pre-allocate for getrf(n) (no-op; LU needs no float scratch -- only ipiv, which getrf
+        allocates itself because it must be int64 for an ILP64 LAPACK)."""
+        return cls()
+
+    @classmethod
+    def for_geqrf(cls, m: int, n: int, nb: int = 64, dtype=np.float64) -> "Workspace":
+        """Pre-allocate for geqrf/gels on an (m, n) matrix.
+
+        QR scratch is ``n * nb`` floats -- O(n), not O(n**2), which is the memory argument for
+        reaching for QR instead of an SVD when a least-squares solve is all that is needed.
+        """
+        ws = cls()
+        ws.get_float(max(1, n * nb), dtype)
+        return ws
+
+    @classmethod
+    def for_svd(cls, m: int, n: int, driver: str = "gesdd", dtype=np.float64) -> "Workspace":
+        """Pre-allocate for svd(m, n, driver=driver).
+
+        The two drivers differ by orders of magnitude, which is the entire reason `driver` exists:
+        ``gesdd`` needs ``4k**2 + 7k`` floats plus ``8k`` int64 (k = min(m, n)); ``gesvd`` needs
+        ``max(3k + max(m, n), 5k)``. At k = 46341 that is ~69 GiB versus ~1.5 MiB.
+        """
+        ws = cls()
+        k = min(m, n)
+        if driver == "gesdd":
+            ws.get_float(4 * k * k + 7 * k, dtype)
+            ws.get_int(max(1, 8 * k))
+        elif driver == "gesvd":
+            ws.get_float(max(3 * k + max(m, n), 5 * k), dtype)
+        else:
+            raise ValueError(f"Workspace.for_svd: unknown driver {driver!r}")
+        return ws

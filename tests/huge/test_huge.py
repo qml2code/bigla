@@ -71,3 +71,35 @@ def test_huge_eigh_ev():
     assert len(w) == N_HUGE
     np.testing.assert_allclose(w, float(N_HUGE), rtol=1e-6)
     print("eigh(ev) passed.")
+
+
+def test_huge_lu_factor_solve():
+    """LU for n=46500 — the non-symmetric counterpart of test_huge_cho_factor_solve.
+
+    This is the case that has no Cholesky at all, so it is the one that justifies binding getrf
+    rather than letting a caller reach for the SPD path and hope. Same ~17 GiB footprint as the
+    Cholesky test above; the two do not run concurrently, but a machine that is tight on memory
+    will feel them back to back.
+    """
+    info = backend_info()
+    if not info.ilp64:
+        pytest.skip(f"ILP64 not available (backend: {info.path})")
+
+    print(f"\nBuilding {N_HUGE}×{N_HUGE} NON-symmetric matrix…")
+    A = np.eye(N_HUGE, dtype=np.float64) * (N_HUGE + 1.0)
+    rng = np.random.default_rng(1)
+    u = rng.standard_normal(N_HUGE).astype(np.float64)
+    v = rng.standard_normal(N_HUGE).astype(np.float64)
+    A += np.outer(u, v) / N_HUGE  # rank-1 and u != v, so A is not symmetric
+    assert not np.allclose(A[0, 1], A[1, 0]), "the point of this test is a non-symmetric matrix"
+
+    x_true = rng.standard_normal(N_HUGE).astype(np.float64)
+    b = A @ x_true
+
+    print("Factorising (getrf) and solving (getrs)…")
+    lu = bigla.lu_factor(A, overwrite_a=True)
+    x = bigla.lu_solve(lu, b.copy())
+
+    err = np.abs(x - x_true).max()
+    print(f"max |x - x_true| = {err:.3e}")
+    assert err < 1e-6, f"LU solve past the LP64 wall returned garbage (err={err:.3e})"

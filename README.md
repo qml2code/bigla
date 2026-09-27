@@ -105,15 +105,69 @@ cho_inverse(c, lower=True, overwrite_c=True)
 eigh(a, lower=True, eigvals_only=False, overwrite_a=False,
      driver="auto", work=None, check_finite=False)
 eigvalsh(a, ...)
-solve(a, b, assume_a="pos", ...)
+solve(a, b, assume_a="pos", ...)          # "pos" -> Cholesky, "gen" -> LU
 solve_triangular(a, b, lower=True, trans=0, overwrite_b=False)
+
+lu_factor(a, overwrite_a=False, check_finite=False)       # -> LUFactor
+lu_solve(lu, b, trans=0, overwrite_b=False)
+qr(a, mode="economic", overwrite_a=False, work=None)      # F-contiguous only, see below
+lstsq(a, b, overwrite_a=False, work=None)                 # full-rank least squares (gels)
+svd(a, full_matrices=False, compute_uv=True, driver="auto", overwrite_a=False, work=None)
+svdvals(a, driver="auto", ...)
 ```
 
 ### Low-level (LAPACK-named, for tight loops)
 
 ```python
-from bigla._core import potrf, potrs, potri, syevd, syev, trtrs
+from bigla._core import (
+    potrf, potrs, potri, syevd, syev, trtrs,     # symmetric / triangular
+    getrf, getrs,                                 # LU
+    geqrf, orgqr, ormqr, gels,                    # QR and least squares
+    gesdd, gesvd,                                 # SVD
+)
 ```
+
+### Where these differ from scipy
+
+The overwrite flags match scipy exactly -- `overwrite_a=False`, `overwrite_b=False`, as every
+`scipy.linalg` counterpart defaults them. `lu_factor` and `lu_solve` match scipy's whole signature.
+Three deliberate divergences, all for the reason this package exists:
+
+| | scipy | bigla | why |
+| --- | --- | --- | --- |
+| `svd(full_matrices=)` | `True` | `False`, and `True` raises | the full form materialises an `m x m` U, which at these sizes is precisely what must not happen |
+| `svd`/`svdvals` driver | `lapack_driver="gesdd"` | `driver="auto"` | memory-aware choice; `gesdd`'s scratch is `O(k²)` — see below |
+| `qr(mode=)` | `"full"` | `"economic"` | same reason as `full_matrices`; `mode="r"` skips forming Q at all |
+
+`qr` also omits `pivoting`/`lwork` and `lstsq` omits `cond`/`lapack_driver`; add them when a caller
+needs them rather than pre-emptively.
+
+### Memory order for the general-matrix routines
+
+A C-contiguous `(p, q)` buffer IS the column-major `(q, p)` matrix `aᵀ`. For a symmetric matrix that
+costs nothing; for a general one LAPACK factorises a different matrix. bigla never copies to hide
+that — see `docs/conventions.md`:
+
+| routine | C-contiguous input | how |
+| --- | --- | --- |
+| `lu_factor` / `lu_solve` | works, no copy | `LUFactor` records `transposed`; `lu_solve` flips `getrs`'s `trans`, so `trans=0` always means the caller's `a x = b` |
+| `lstsq` | works, no copy of `a` | `gels` takes a `trans` flag (`b` is copied — `gels` needs a `max(m, n)`-row buffer) |
+| `svd` / `svdvals` | works, no copy | outputs recovered by swapping and transposing, both views |
+| `qr` | **raises** | the QR of `aᵀ` is an LQ of `a`; the error names `lstsq`/`svd`, or pass `np.asfortranarray(a)` to accept the copy |
+
+### SVD drivers
+
+`svd(driver=...)` mirrors `eigh`'s policy, and for the same reason:
+
+| driver | workspace | notes |
+| --- | --- | --- |
+| `"gesdd"` | `4k² + 7k` floats (k = min(m,n)) | divide & conquer, fastest. **~69 GiB at k = 46341** — the SVD analogue of `syevd` |
+| `"gesvd"` | `max(3k + max(m,n), 5k)` | QR iteration, slower, O(max(m,n)) scratch |
+| `"auto"` (default) | — | `gesdd` when its workspace fits in `_EVD_MEM_FRACTION` of `MemAvailable`, else `gesvd` |
+
+`qr(mode="r")` and `lstsq` are the memory-lean route when only a least-squares solve is wanted: QR
+scratch is O(n), and `ormqr` applies `Q` without forming it. Rank-deficient input is the case QR
+cannot cover — `gels` raises, and SVD is the answer there.
 
 ### Backend control
 

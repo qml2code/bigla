@@ -46,6 +46,28 @@ return 'U' if use_upper else 'L'
 
 ---
 
+## General matrices: no uplo, and the transpose is genuine
+
+LU, QR, least squares and SVD read the whole matrix, so `uplo` does not apply. The layout question
+does not go away, though — it gets worse. For a symmetric matrix, reinterpreting a C-contiguous
+buffer as Fortran gives `Aᵀ = A` and costs nothing. For a general matrix it gives a *different
+matrix*, and every routine has to account for it.
+
+`_validate_2d(a, name, dtype)` is the general-matrix counterpart of the uplo flip. It returns
+`(m, n, transposed)` — the dimensions of the matrix LAPACK will operate on, and whether that matrix
+is the caller's `a` transposed. Nothing is copied; the transpose is propagated into the algebra:
+
+| routine | C-contiguous input | mechanism |
+| --- | --- | --- |
+| `lu_factor` / `lu_solve` | works, no copy | `LUFactor.transposed` is XORed into `getrs`'s `trans`, so `trans=0` means the caller's `a x = b` in either order |
+| `lstsq` | works, no copy of `a` | `gels` takes `trans`; setting it from the memory order solves the intended problem exactly (`b` is copied — `gels` needs a `max(m, n)`-row buffer) |
+| `svd` / `svdvals` | works, no copy | `aᵀ = Ũ s Ṽᵀ` ⟹ `a = Ṽ s Ũᵀ`; swap and transpose the factors, both zero-copy views |
+| `qr` | **raises** | the QR of `aᵀ` is an LQ of `a` — no identity recovers `(Q, R)`. The error names `lstsq`/`svd` instead |
+
+The asymmetry is worth internalising: three of the four absorb the transpose for free because their
+LAPACK drivers take a `trans` flag or because the decomposition is symmetric under transposition.
+QR has neither property, so it is the only routine in bigla that refuses a contiguous array.
+
 ## What `lower=` means to the caller
 
 `lower=True` (the default) means: **the lower triangle of the array you passed

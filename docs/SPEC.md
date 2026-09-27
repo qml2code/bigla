@@ -113,6 +113,16 @@ For the record, an actual in-place *reorder* (for a non-symmetric square matrix)
 possible — element-swap over the upper triangle — but it is cache-hostile and we never
 need it. `A[:] = A.T` does not do it: numpy detects the overlap and allocates a temporary.
 
+**Amendment — the general-matrix routines (LU, QR, least squares, SVD).** "We never need it" held
+while every routine was symmetric or triangular. The general-matrix routines genuinely operate on
+`aᵀ` when handed a C-contiguous buffer, and we still neither reorder nor copy: `_validate_2d(a,
+name, dtype)` reports `(m, n, transposed)` for the matrix LAPACK will see, and the transpose is
+carried into each routine's algebra. LU folds it into `getrs`'s `trans`; `gels` takes a `trans` of
+its own; SVD recovers the caller's factors by swapping and transposing views. QR is the exception
+and raises on C-contiguous input, because the QR of `aᵀ` is an LQ of `a` and no identity repairs the
+shapes. See `docs/conventions.md` for the table and `AGENTS.md` for why this is the third form of
+the same defect class as D1/D2.
+
 ---
 
 ## 4. Package layout

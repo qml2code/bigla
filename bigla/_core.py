@@ -92,6 +92,30 @@ def _validate_square(a: np.ndarray, name: str, dtype) -> int:
     return a.shape[0]
 
 
+def _validate_2d(a: np.ndarray, name: str, dtype) -> tuple:
+    """Validate a general (not necessarily square) 2-D array and report how LAPACK will see it.
+
+    Returns ``(m, n, transposed)`` where ``m``/``n`` are the dimensions of the matrix LAPACK
+    actually operates on, and ``transposed`` says whether that matrix is the caller's ``a``
+    transposed.
+
+    This is the general-matrix counterpart of the uplo flip used for symmetric routines, and the
+    reason it needs to exist: a C-contiguous ``(p, q)`` buffer IS the column-major ``(q, p)``
+    matrix ``a.T``. For a symmetric matrix that costs nothing because ``a.T == a``; for a general
+    matrix LAPACK genuinely factorises the transpose, so every caller must account for it. We never
+    copy (SPEC §3) -- the transpose is propagated into the algebra instead, in linalg.py.
+    """
+    if a.dtype != np.dtype(dtype):
+        raise TypeError(f"{name}: expected dtype {dtype}, got {a.dtype}")
+    ascontiguous_or_raise(a, name)
+    if a.ndim != 2:
+        raise ValueError(f"{name} must be a 2-D array, got shape {a.shape}")
+    # F-contiguous (incl. the 1-column/1-row ambiguous cases) -> LAPACK sees `a` itself.
+    if a.flags.f_contiguous:
+        return a.shape[0], a.shape[1], False
+    return a.shape[1], a.shape[0], True
+
+
 def _sym(name: str):
     lib = get_lib()
     p, s = get_decoration()
@@ -113,6 +137,25 @@ def _check_info(routine: str, info: int, n: int) -> None:
     if routine in ("syevd", "syev"):
         raise np.linalg.LinAlgError(
             f"{routine}: eigenvalue algorithm did not converge (info={info})"
+        )
+    if routine == "getrf":
+        raise np.linalg.LinAlgError(
+            f"getrf: U[{info - 1},{info - 1}] is exactly zero -- the matrix is singular, so the "
+            "factorization completed but cannot be used to solve. Unlike potrf this says nothing "
+            "about definiteness; a ridge term is one fix, pivoting cannot rescue an exactly "
+            "rank-deficient matrix."
+        )
+    if routine == "getrs":
+        raise np.linalg.LinAlgError(f"getrs: matrix is singular (info={info})")
+    if routine in ("gesdd", "gesvd"):
+        raise np.linalg.LinAlgError(
+            f"{routine}: SVD did not converge ({info} superdiagonals failed). Try driver='gesvd' "
+            "(slower, more robust) if this came from gesdd."
+        )
+    if routine == "gels":
+        raise np.linalg.LinAlgError(
+            f"gels: element {info} of the triangular factor is exactly zero -- A is rank-deficient, "
+            "so the least-squares solution is not unique. Use an SVD-based solve instead."
         )
     raise np.linalg.LinAlgError(f"{routine}: info={info}")
 
@@ -431,3 +474,526 @@ def trtrs(
     )
     _check_info("trtrs", info.value, n)
     return b
+
+
+# ---------------------------------------------------------------------------
+# getrf / getrs  (LU)
+# ---------------------------------------------------------------------------
+
+
+def getrf(a: np.ndarray, overwrite_a: bool = True) -> tuple[np.ndarray, np.ndarray]:
+    """LU factorisation with partial pivoting (dgetrf / sgetrf).
+
+    Returns ``(lu, ipiv)``. ``ipiv`` is 1-BASED as LAPACK returns it -- it is fed straight back to
+    :func:`getrs`, so it is deliberately not converted to 0-based numpy indices.
+
+    ``ipiv`` is int64 because an ILP64 LAPACK writes 64-bit integers into it. Sizing it as int32
+    would corrupt adjacent memory rather than raise, so this is not a detail to "optimise".
+
+    Ordering: for a C-contiguous ``a`` LAPACK factorises ``a.T`` (SPEC §3 / :func:`_validate_2d`).
+    That is exact and copy-free, and :func:`lu_solve` compensates by flipping ``trans``.
+    """
+    if not overwrite_a:
+        a = a.copy(order="K")
+    dtype = a.dtype
+    fn = _sym("dgetrf") if dtype == np.float64 else _sym("sgetrf") if dtype == np.float32 else None
+    if fn is None:
+        raise TypeError(f"getrf: unsupported dtype {dtype}")
+
+    m, n, _ = _validate_2d(a, "a", dtype)
+    ipiv = np.empty(min(m, n), dtype=np.int64)
+    info = _I(0)
+    fn(_iref(m), _iref(n), _ptr(a), _iref(m), _ptr(ipiv), ctypes.byref(info))
+    _check_info("getrf", info.value, min(m, n))
+    return a, ipiv
+
+
+def getrs(
+    lu: np.ndarray,
+    ipiv: np.ndarray,
+    b: np.ndarray,
+    trans: int = 0,
+    overwrite_b: bool = True,
+) -> np.ndarray:
+    """Solve from an LU factorisation (dgetrs / sgetrs).
+
+    ``trans``: 0 -> ``A x = b``, 1 -> ``A**T x = b``, where ``A`` is the matrix LAPACK factorised
+    (i.e. ``lu.T`` when ``lu`` is C-contiguous -- see :func:`getrf`).
+    """
+    if not overwrite_b:
+        b = b.copy(order="K")
+    dtype = lu.dtype
+    fn = _sym("dgetrs") if dtype == np.float64 else _sym("sgetrs") if dtype == np.float32 else None
+    if fn is None:
+        raise TypeError(f"getrs: unsupported dtype {dtype}")
+
+    m, n, _ = _validate_2d(lu, "lu", dtype)
+    if m != n:
+        raise ValueError(f"getrs: factor must be square, LAPACK sees {m}x{n}")
+    if b.dtype != dtype:
+        raise TypeError(f"getrs: b dtype {b.dtype} must match factor dtype {dtype}")
+    if ipiv.dtype != np.int64:
+        raise TypeError(f"getrs: ipiv must be int64 (ILP64), got {ipiv.dtype}")
+    ascontiguous_or_raise(b, "b")
+    if b.ndim == 1:
+        if b.shape[0] != n:
+            raise ValueError(f"getrs: b.shape[0]={b.shape[0]} != n={n}")
+        nrhs, ldb = 1, n
+    elif b.ndim == 2:
+        if b.shape[0] != n:
+            raise ValueError(f"getrs: b.shape[0]={b.shape[0]} != n={n}")
+        if not b.flags.f_contiguous:
+            raise ValueError("getrs: multi-RHS b must be F-contiguous")
+        nrhs, ldb = b.shape[1], n
+    else:
+        raise ValueError("getrs: b must be 1-D or 2-D")
+
+    trans_c = ctypes.c_char(b"T" if trans else b"N")
+    info = _I(0)
+    fn(
+        ctypes.byref(trans_c),
+        _iref(n),
+        _iref(nrhs),
+        _ptr(lu),
+        _iref(n),
+        _ptr(ipiv),
+        _ptr(b),
+        _iref(ldb),
+        ctypes.byref(info),
+        _I(1),
+    )
+    _check_info("getrs", info.value, n)
+    return b
+
+
+# ---------------------------------------------------------------------------
+# geqrf / orgqr / ormqr  (QR)
+# ---------------------------------------------------------------------------
+
+
+def geqrf(
+    a: np.ndarray, overwrite_a: bool = True, work: Optional[Workspace] = None
+) -> tuple[np.ndarray, np.ndarray]:
+    """QR factorisation (dgeqrf / sgeqrf). Returns ``(a, tau)``; ``R`` is the upper triangle of the
+    LAPACK view of ``a`` and ``Q`` is represented implicitly by ``(a, tau)``.
+
+    Workspace: ``n * nb`` doubles -- O(n), the reason QR is the memory-lean route to least squares.
+
+    Ordering: C-contiguous ``a`` means LAPACK factorises ``a.T``, so this yields the QR of ``a.T``
+    (equivalently an LQ of ``a``). Prefer :func:`gels` for least squares, which takes ``trans`` and
+    so handles both orders exactly.
+    """
+    if not overwrite_a:
+        a = a.copy(order="K")
+    dtype = a.dtype
+    fn = _sym("dgeqrf") if dtype == np.float64 else _sym("sgeqrf") if dtype == np.float32 else None
+    if fn is None:
+        raise TypeError(f"geqrf: unsupported dtype {dtype}")
+
+    m, n, _ = _validate_2d(a, "a", dtype)
+    tau = np.empty(min(m, n), dtype=dtype)
+    info = _I(0)
+    wq = np.empty(1, dtype=dtype)
+    fn(_iref(m), _iref(n), _ptr(a), _iref(m), _ptr(tau), _ptr(wq), _iref(-1), ctypes.byref(info))
+    if info.value < 0:
+        raise ValueError(f"geqrf workspace query: illegal argument {-info.value}")
+    lwork = max(1, int(round(wq[0])))
+    dwork, _ = _workspace_bufs(work, lwork, 0, dtype)
+    info = _I(0)
+    fn(
+        _iref(m),
+        _iref(n),
+        _ptr(a),
+        _iref(m),
+        _ptr(tau),
+        _ptr(dwork),
+        _iref(lwork),
+        ctypes.byref(info),
+    )
+    _check_info("geqrf", info.value, min(m, n))
+    return a, tau
+
+
+def orgqr(
+    a: np.ndarray,
+    tau: np.ndarray,
+    k: Optional[int] = None,
+    overwrite_a: bool = True,
+    work: Optional[Workspace] = None,
+) -> np.ndarray:
+    """Form ``Q`` explicitly from a :func:`geqrf` result (dorgqr / sorgqr).
+
+    Overwrites the factor with ``Q`` (m x k). Only needed when ``Q`` itself is wanted; applying
+    ``Q`` to something is cheaper and lower-memory via :func:`ormqr`.
+    """
+    if not overwrite_a:
+        a = a.copy(order="K")
+    dtype = a.dtype
+    fn = _sym("dorgqr") if dtype == np.float64 else _sym("sorgqr") if dtype == np.float32 else None
+    if fn is None:
+        raise TypeError(f"orgqr: unsupported dtype {dtype}")
+
+    m, n, _ = _validate_2d(a, "a", dtype)
+    if k is None:
+        k = min(m, n)
+    info = _I(0)
+    wq = np.empty(1, dtype=dtype)
+    fn(
+        _iref(m),
+        _iref(k),
+        _iref(k),
+        _ptr(a),
+        _iref(m),
+        _ptr(tau),
+        _ptr(wq),
+        _iref(-1),
+        ctypes.byref(info),
+    )
+    if info.value < 0:
+        raise ValueError(f"orgqr workspace query: illegal argument {-info.value}")
+    lwork = max(1, int(round(wq[0])))
+    dwork, _ = _workspace_bufs(work, lwork, 0, dtype)
+    info = _I(0)
+    fn(
+        _iref(m),
+        _iref(k),
+        _iref(k),
+        _ptr(a),
+        _iref(m),
+        _ptr(tau),
+        _ptr(dwork),
+        _iref(lwork),
+        ctypes.byref(info),
+    )
+    _check_info("orgqr", info.value, m)
+    return a
+
+
+def ormqr(
+    a: np.ndarray,
+    tau: np.ndarray,
+    c: np.ndarray,
+    side: str = "L",
+    trans: str = "T",
+    overwrite_c: bool = True,
+    work: Optional[Workspace] = None,
+) -> np.ndarray:
+    """Apply ``Q`` (or ``Qᵀ``) from :func:`geqrf` to ``c`` WITHOUT forming ``Q`` (dormqr / sormqr).
+
+    This is the memory argument for QR: forming ``Q`` costs m x k, applying it costs a
+    O(block) workspace.
+    """
+    if not overwrite_c:
+        c = c.copy(order="K")
+    dtype = a.dtype
+    fn = _sym("dormqr") if dtype == np.float64 else _sym("sormqr") if dtype == np.float32 else None
+    if fn is None:
+        raise TypeError(f"ormqr: unsupported dtype {dtype}")
+    if c.dtype != dtype:
+        raise TypeError(f"ormqr: c dtype {c.dtype} must match factor dtype {dtype}")
+    ascontiguous_or_raise(c, "c")
+
+    am, an, _ = _validate_2d(a, "a", dtype)
+    k = len(tau)
+    if c.ndim == 1:
+        cm, cn, ldc = c.shape[0], 1, c.shape[0]
+    else:
+        if not c.flags.f_contiguous:
+            raise ValueError("ormqr: 2-D c must be F-contiguous")
+        cm, cn, ldc = c.shape[0], c.shape[1], c.shape[0]
+
+    side_c = ctypes.c_char(side.encode()[:1].upper())
+    trans_c = ctypes.c_char(trans.encode()[:1].upper())
+    info = _I(0)
+    wq = np.empty(1, dtype=dtype)
+    fn(
+        ctypes.byref(side_c),
+        ctypes.byref(trans_c),
+        _iref(cm),
+        _iref(cn),
+        _iref(k),
+        _ptr(a),
+        _iref(am),
+        _ptr(tau),
+        _ptr(c),
+        _iref(ldc),
+        _ptr(wq),
+        _iref(-1),
+        ctypes.byref(info),
+        _I(1),
+        _I(1),
+    )
+    if info.value < 0:
+        raise ValueError(f"ormqr workspace query: illegal argument {-info.value}")
+    lwork = max(1, int(round(wq[0])))
+    dwork, _ = _workspace_bufs(work, lwork, 0, dtype)
+    info = _I(0)
+    fn(
+        ctypes.byref(side_c),
+        ctypes.byref(trans_c),
+        _iref(cm),
+        _iref(cn),
+        _iref(k),
+        _ptr(a),
+        _iref(am),
+        _ptr(tau),
+        _ptr(c),
+        _iref(ldc),
+        _ptr(dwork),
+        _iref(lwork),
+        ctypes.byref(info),
+        _I(1),
+        _I(1),
+    )
+    _check_info("ormqr", info.value, k)
+    return c
+
+
+# ---------------------------------------------------------------------------
+# gels  (least squares via QR/LQ)
+# ---------------------------------------------------------------------------
+
+
+def gels(
+    a: np.ndarray,
+    b: np.ndarray,
+    trans: int = 0,
+    overwrite_a: bool = True,
+    overwrite_b: bool = True,
+    work: Optional[Workspace] = None,
+) -> np.ndarray:
+    """Least-squares solve of a FULL-RANK system via QR or LQ (dgels / sgels).
+
+    ``trans``: 0 -> minimise ``||A x - b||``, 1 -> minimise ``||A**T x - b||``, where ``A`` is the
+    matrix LAPACK sees. Because a C-contiguous array presents as ``a.T``, ``trans`` is exactly the
+    lever that makes both memory orders work with no copy -- :func:`bigla.linalg.lstsq` sets it.
+
+    ``b`` must have room for the result: its leading dimension must be ``max(m, n)``.
+    Raises on a rank-deficient ``A`` (LAPACK requires full rank here); use an SVD-based solve then.
+    """
+    dtype = a.dtype
+    fn = _sym("dgels") if dtype == np.float64 else _sym("sgels") if dtype == np.float32 else None
+    if fn is None:
+        raise TypeError(f"gels: unsupported dtype {dtype}")
+    if not overwrite_a:
+        a = a.copy(order="K")
+    if not overwrite_b:
+        b = b.copy(order="K")
+    if b.dtype != dtype:
+        raise TypeError(f"gels: b dtype {b.dtype} must match a dtype {dtype}")
+    ascontiguous_or_raise(b, "b")
+
+    m, n, _ = _validate_2d(a, "a", dtype)
+    ldb = max(m, n)
+    if b.ndim == 1:
+        nrhs = 1
+        if b.shape[0] < ldb:
+            raise ValueError(f"gels: b must hold max(m,n)={ldb} rows, got {b.shape[0]}")
+    else:
+        if not b.flags.f_contiguous:
+            raise ValueError("gels: 2-D b must be F-contiguous")
+        nrhs = b.shape[1]
+        if b.shape[0] < ldb:
+            raise ValueError(f"gels: b must hold max(m,n)={ldb} rows, got {b.shape[0]}")
+    ldb = b.shape[0]
+
+    trans_c = ctypes.c_char(b"T" if trans else b"N")
+    info = _I(0)
+    wq = np.empty(1, dtype=dtype)
+    fn(
+        ctypes.byref(trans_c),
+        _iref(m),
+        _iref(n),
+        _iref(nrhs),
+        _ptr(a),
+        _iref(m),
+        _ptr(b),
+        _iref(ldb),
+        _ptr(wq),
+        _iref(-1),
+        ctypes.byref(info),
+        _I(1),
+    )
+    if info.value < 0:
+        raise ValueError(f"gels workspace query: illegal argument {-info.value}")
+    lwork = max(1, int(round(wq[0])))
+    dwork, _ = _workspace_bufs(work, lwork, 0, dtype)
+    info = _I(0)
+    fn(
+        ctypes.byref(trans_c),
+        _iref(m),
+        _iref(n),
+        _iref(nrhs),
+        _ptr(a),
+        _iref(m),
+        _ptr(b),
+        _iref(ldb),
+        _ptr(dwork),
+        _iref(lwork),
+        ctypes.byref(info),
+        _I(1),
+    )
+    _check_info("gels", info.value, min(m, n))
+    return b
+
+
+# ---------------------------------------------------------------------------
+# gesdd / gesvd  (SVD)
+# ---------------------------------------------------------------------------
+
+
+def _svd_outputs(m: int, n: int, dtype, compute_uv: bool):
+    """Allocate ``s``, ``u``, ``vt`` for the reduced ('S') SVD, F-ordered as LAPACK writes them."""
+    k = min(m, n)
+    s = np.empty(k, dtype=dtype)
+    if not compute_uv:
+        return (
+            s,
+            np.empty((1, 1), dtype=dtype, order="F"),
+            np.empty((1, 1), dtype=dtype, order="F"),
+        )
+    u = np.empty((m, k), dtype=dtype, order="F")
+    vt = np.empty((k, n), dtype=dtype, order="F")
+    return s, u, vt
+
+
+def gesdd(
+    a: np.ndarray,
+    compute_uv: bool = True,
+    overwrite_a: bool = True,
+    work: Optional[Workspace] = None,
+) -> tuple:
+    """Reduced SVD by divide & conquer (dgesdd / sgesdd). Returns ``(u, s, vt)`` of the matrix
+    LAPACK sees (``a.T`` for C-contiguous ``a`` -- :func:`bigla.linalg.svd` untangles that).
+
+    WORKSPACE WARNING: ``gesdd`` is the SVD analogue of ``syevd`` -- its scratch is ~``4k**2``
+    doubles (k = min(m,n)), i.e. ~69 GiB at k = 46341. That is exactly the size range bigla exists
+    for, so :func:`bigla.linalg.svd` defaults to a memory-aware driver choice rather than to this
+    routine. Use it when you know the workspace fits.
+    """
+    if not overwrite_a:
+        a = a.copy(order="K")
+    dtype = a.dtype
+    fn = _sym("dgesdd") if dtype == np.float64 else _sym("sgesdd") if dtype == np.float32 else None
+    if fn is None:
+        raise TypeError(f"gesdd: unsupported dtype {dtype}")
+
+    m, n, _ = _validate_2d(a, "a", dtype)
+    k = min(m, n)
+    jobz = ctypes.c_char(b"S" if compute_uv else b"N")
+    s, u, vt = _svd_outputs(m, n, dtype, compute_uv)
+    ldu, ldvt = (m if compute_uv else 1), (k if compute_uv else 1)
+
+    info = _I(0)
+    wq = np.empty(1, dtype=dtype)
+    iwork = np.empty(max(1, 8 * k), dtype=np.int64)
+    fn(
+        ctypes.byref(jobz),
+        _iref(m),
+        _iref(n),
+        _ptr(a),
+        _iref(m),
+        _ptr(s),
+        _ptr(u),
+        _iref(ldu),
+        _ptr(vt),
+        _iref(ldvt),
+        _ptr(wq),
+        _iref(-1),
+        _ptr(iwork),
+        ctypes.byref(info),
+        _I(1),
+    )
+    if info.value < 0:
+        raise ValueError(f"gesdd workspace query: illegal argument {-info.value}")
+    lwork = max(1, int(round(wq[0])))
+    dwork, iwork = _workspace_bufs(work, lwork, max(1, 8 * k), dtype)
+    info = _I(0)
+    fn(
+        ctypes.byref(jobz),
+        _iref(m),
+        _iref(n),
+        _ptr(a),
+        _iref(m),
+        _ptr(s),
+        _ptr(u),
+        _iref(ldu),
+        _ptr(vt),
+        _iref(ldvt),
+        _ptr(dwork),
+        _iref(lwork),
+        _ptr(iwork),
+        ctypes.byref(info),
+        _I(1),
+    )
+    _check_info("gesdd", info.value, k)
+    return (u, s, vt) if compute_uv else (None, s, None)
+
+
+def gesvd(
+    a: np.ndarray,
+    compute_uv: bool = True,
+    overwrite_a: bool = True,
+    work: Optional[Workspace] = None,
+) -> tuple:
+    """Reduced SVD by QR iteration (dgesvd / sgesvd). Same outputs as :func:`gesdd`, slower, but
+    its workspace is ``max(3k + max(m,n), 5k)`` -- O(max(m,n)) rather than O(k**2), which is why it
+    is the safe driver at the sizes bigla targets."""
+    if not overwrite_a:
+        a = a.copy(order="K")
+    dtype = a.dtype
+    fn = _sym("dgesvd") if dtype == np.float64 else _sym("sgesvd") if dtype == np.float32 else None
+    if fn is None:
+        raise TypeError(f"gesvd: unsupported dtype {dtype}")
+
+    m, n, _ = _validate_2d(a, "a", dtype)
+    k = min(m, n)
+    job = ctypes.c_char(b"S" if compute_uv else b"N")
+    s, u, vt = _svd_outputs(m, n, dtype, compute_uv)
+    ldu, ldvt = (m if compute_uv else 1), (k if compute_uv else 1)
+
+    info = _I(0)
+    wq = np.empty(1, dtype=dtype)
+    fn(
+        ctypes.byref(job),
+        ctypes.byref(job),
+        _iref(m),
+        _iref(n),
+        _ptr(a),
+        _iref(m),
+        _ptr(s),
+        _ptr(u),
+        _iref(ldu),
+        _ptr(vt),
+        _iref(ldvt),
+        _ptr(wq),
+        _iref(-1),
+        ctypes.byref(info),
+        _I(1),
+        _I(1),
+    )
+    if info.value < 0:
+        raise ValueError(f"gesvd workspace query: illegal argument {-info.value}")
+    lwork = max(1, int(round(wq[0])))
+    dwork, _ = _workspace_bufs(work, lwork, 0, dtype)
+    info = _I(0)
+    fn(
+        ctypes.byref(job),
+        ctypes.byref(job),
+        _iref(m),
+        _iref(n),
+        _ptr(a),
+        _iref(m),
+        _ptr(s),
+        _ptr(u),
+        _iref(ldu),
+        _ptr(vt),
+        _iref(ldvt),
+        _ptr(dwork),
+        _iref(lwork),
+        ctypes.byref(info),
+        _I(1),
+        _I(1),
+    )
+    _check_info("gesvd", info.value, k)
+    return (u, s, vt) if compute_uv else (None, s, None)

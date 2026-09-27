@@ -5,6 +5,22 @@ overwrite_a=False and eigenvectors returned as COLUMNS.  What differs is the
 size ceiling (none, on an ILP64 backend) and that overwrite_a=True is honoured
 for C-contiguous input, which scipy copies regardless.
 
+Three of the general-matrix routines deliberately narrow that promise, all for
+one reason -- refusing to allocate at the sizes this package exists for:
+
+  svd        full_matrices is False and True RAISES.  scipy defaults it to True,
+             which materialises an m x m U; at n past the LP64 wall that array is
+             the thing you were trying to avoid.
+  svd,       the driver argument is `driver=` and defaults to "auto", where scipy
+  svdvals    has `lapack_driver="gesdd"`.  gesdd's scratch grows as k^2 (~69 GiB
+             at k = 46341), so choosing it unconditionally is not safe here.
+  qr         mode defaults to "economic", not scipy's "full", for the same reason
+             as full_matrices.  mode="r" skips forming Q at all.
+
+qr also omits pivoting/lwork and lstsq omits cond/lapack_driver; add them when a
+caller needs them.  lu_factor and lu_solve match scipy's signature exactly.
+Every overwrite_a/overwrite_b default here is False, as it is in scipy.
+
 Ordering rule (§3): C- and F-contiguous symmetric arrays are both accepted
 without copying.  LAPACK leaves eigenvectors as ROWS of the working buffer;
 eigh() returns the transposed VIEW so callers see scipy's column convention at
@@ -19,7 +35,22 @@ from typing import Optional, Union
 import numpy as np
 
 from bigla._backend import BiglaBackendError, backend_info
-from bigla._core import ascontiguous_or_raise, potrf, potri, potrs, syev, syevd, trtrs
+from bigla._core import (
+    ascontiguous_or_raise,
+    gels,
+    geqrf,
+    gesdd,
+    gesvd,
+    getrf,
+    getrs,
+    orgqr,
+    potrf,
+    potri,
+    potrs,
+    syev,
+    syevd,
+    trtrs,
+)
 from bigla.workspace import Workspace
 
 log = logging.getLogger(__name__)
@@ -71,6 +102,26 @@ def _check_dim(n: int, func: str) -> None:
 # ---------------------------------------------------------------------------
 # cho_factor
 # ---------------------------------------------------------------------------
+
+
+def _check_dim_2d(m: int, n: int, func: str) -> None:
+    """Dimension guard for a RECTANGULAR matrix, where the binding quantity is the ELEMENT COUNT.
+
+    `_check_dim` compares a single dimension against `max_dim`, which is exactly right for a square
+    routine: for an n x n matrix, n > max_dim iff n**2 exceeds what LP64's 32-bit indices can
+    address, and 46340 is just under sqrt(2**31). Applying that test to `max(m, n)` instead is
+    over-strict -- it would refuse a 100000 x 100 problem on an LP64 backend, though its 10**7
+    elements are comfortably addressable. Squaring `max_dim` reproduces the square case exactly
+    while letting a tall-skinny matrix through.
+    """
+    info = backend_info()
+    limit = info.max_dim**2
+    if m * n > limit:
+        raise BiglaBackendError(
+            f"{func}: {m}x{n} is {m * n} elements, past the {limit} a backend with "
+            f"max_dim={info.max_dim} can address ({info.path}).  Install an ILP64 library or "
+            "`pip install scipy-openblas64`.  See docs/backends.md."
+        )
 
 
 def cho_factor(
@@ -303,14 +354,23 @@ def solve(
     overwrite_b: bool = False,
     check_finite: bool = False,
 ) -> np.ndarray:
-    """Solve A x = b for symmetric positive-definite A (potrf + potrs).
+    """Solve A x = b.
 
-    Only assume_a='pos' is implemented.  No LU fallback.
+    ``assume_a='pos'`` (default): symmetric positive-definite, via potrf + potrs.
+    ``assume_a='gen'``: general square matrix, via LU -- see :func:`lu_factor`.
+
+    Choosing 'pos' for a matrix that is not positive definite is a correctness question, not a
+    performance one: potrf either raises or, on an indefinite matrix whose leading minors happen to
+    be positive, returns a wrong answer. Use 'gen' when definiteness is not established. ``lower``
+    is ignored for 'gen' (LU reads the whole matrix).
     """
-    if assume_a != "pos":
+    if assume_a not in ("pos", "gen"):
         raise NotImplementedError(
-            f"solve: assume_a={assume_a!r} not implemented.  Only 'pos' is supported."
+            f"solve: assume_a={assume_a!r} not implemented.  Use 'pos' or 'gen'."
         )
+    if assume_a == "gen":
+        lu = lu_factor(a, overwrite_a=overwrite_a, check_finite=check_finite)
+        return lu_solve(lu, b, overwrite_b=overwrite_b, check_finite=check_finite)
     _check_finite(a, "a", check_finite)
     _check_finite(b, "b", check_finite)
     if not overwrite_a:
@@ -346,3 +406,323 @@ def solve_triangular(
         ascontiguous_or_raise(b, "b")  # never let the copy hide a strided view
         b = b.copy(order="K")
     return trtrs(a, b, lower=lower, trans=trans, overwrite_b=True)
+
+
+# ---------------------------------------------------------------------------
+# LU
+# ---------------------------------------------------------------------------
+
+
+class LUFactor:
+    """An LU factorisation plus the one bit of bookkeeping a caller must not have to remember.
+
+    A C-contiguous ``(n, n)`` buffer IS the column-major matrix ``a.T``, so LAPACK factorises the
+    transpose (SPEC §3). That is exact and needs no copy, but every later solve has to know, because
+    solving ``a x = b`` from a factorisation of ``aᵀ`` means asking getrs for the TRANSPOSED solve.
+    Carrying ``transposed`` here is what stops that from becoming a caller-visible trap -- the same
+    class of trap as ``eigh`` returning ``Qᵀ``.
+
+    Attributes: ``lu`` (the overwritten buffer), ``ipiv`` (1-based, as LAPACK wrote it),
+    ``transposed`` (whether ``lu`` holds the factors of ``aᵀ`` rather than ``a``).
+    """
+
+    __slots__ = ("lu", "ipiv", "transposed")
+
+    def __init__(self, lu: np.ndarray, ipiv: np.ndarray, transposed: bool) -> None:
+        self.lu = lu
+        self.ipiv = ipiv
+        self.transposed = transposed
+
+    def __iter__(self):
+        """Unpack as ``lu, ipiv`` for scipy-shaped call sites."""
+        return iter((self.lu, self.ipiv))
+
+    def __repr__(self) -> str:
+        return (
+            f"LUFactor(shape={self.lu.shape}, dtype={self.lu.dtype}, "
+            f"transposed={self.transposed})"
+        )
+
+
+def lu_factor(
+    a: np.ndarray,
+    overwrite_a: bool = False,
+    check_finite: bool = False,
+) -> LUFactor:
+    """LU factorisation with partial pivoting, for a general square matrix.
+
+    Returns a :class:`LUFactor`; feed it to :func:`lu_solve`. Unlike Cholesky this makes no
+    definiteness assumption, which is the whole point of having it: an indefinite or merely
+    non-symmetric matrix has no Cholesky factor, and substituting one silently is a correctness bug
+    rather than a slowdown.
+
+    Accepts C- or F-contiguous input without copying; see :class:`LUFactor` on why the distinction
+    is recorded.
+
+    Signature-compatible with ``scipy.linalg.lu_factor``, ``overwrite_a=False`` default included.
+    The one difference is the return type: a :class:`LUFactor` rather than a bare ``(lu, ipiv)``
+    tuple, because the transpose flag has to travel with the factors. It unpacks as ``lu, ipiv`` for
+    call sites that want the scipy shape.
+    """
+    _check_finite(a, "a", check_finite)
+    n = a.shape[0]
+    if a.ndim != 2 or a.shape[0] != a.shape[1]:
+        raise ValueError(f"lu_factor: a must be square 2-D, got shape {a.shape}")
+    if not overwrite_a:
+        ascontiguous_or_raise(a, "a")  # never let the copy hide a strided view
+    _check_dim(n, "lu_factor")
+    transposed = not a.flags.f_contiguous
+    lu, ipiv = getrf(a, overwrite_a=overwrite_a)
+    return LUFactor(lu, ipiv, transposed)
+
+
+def lu_solve(
+    lu_and_piv,
+    b: np.ndarray,
+    trans: int = 0,
+    overwrite_b: bool = False,
+    check_finite: bool = False,
+) -> np.ndarray:
+    """Solve from a :func:`lu_factor` result. ``trans``: 0 -> ``a x = b``, 1 -> ``aᵀ x = b``,
+    where ``a`` is the matrix the CALLER factorised (the stored ``transposed`` flag is folded in
+    here, so ``trans`` means what it says regardless of memory order).
+
+    Accepts a bare ``(lu, ipiv)`` tuple too, in which case ``lu`` is assumed to be the factorisation
+    of the matrix LAPACK saw -- i.e. no transpose correction is applied.
+    """
+    if isinstance(lu_and_piv, LUFactor):
+        lu, ipiv, transposed = lu_and_piv.lu, lu_and_piv.ipiv, lu_and_piv.transposed
+    else:
+        lu, ipiv = lu_and_piv
+        transposed = False
+    _check_finite(b, "b", check_finite)
+    if not overwrite_b:
+        ascontiguous_or_raise(b, "b")  # never let the copy hide a strided view
+    # XOR: factorising aᵀ turns a requested 'N' solve into a 'T' one and vice versa.
+    effective_trans = int(bool(trans) ^ bool(transposed))
+    return getrs(lu, ipiv, b, trans=effective_trans, overwrite_b=overwrite_b)
+
+
+# ---------------------------------------------------------------------------
+# QR
+# ---------------------------------------------------------------------------
+
+
+def qr(
+    a: np.ndarray,
+    mode: str = "economic",
+    overwrite_a: bool = False,
+    check_finite: bool = False,
+    work: Optional[Workspace] = None,
+):
+    """QR factorisation of a general ``(m, n)`` matrix, ``m >= n``.
+
+    ``mode='economic'`` (default) returns ``(Q, R)`` with ``Q`` of shape ``(m, k)`` and ``R``
+    ``(k, n)``, ``k = min(m, n)``. ``mode='r'`` returns ``R`` alone and never forms ``Q`` -- much
+    cheaper, and enough for a least-squares solve or for the tall-skinny SVD trick.
+
+    Diverges from scipy, which defaults ``mode`` to ``'full'``: that returns the full ``(m, m)``
+    ``Q``, and an ``m x m`` array is exactly what a package for out-of-scipy-range matrices must
+    not hand back by default. ``pivoting`` and ``lwork`` are not implemented.
+
+    **Requires F-contiguous input.** This is the one routine where the SPEC §3 no-copy rule bites:
+    for a C-contiguous ``a`` LAPACK would factorise ``aᵀ``, and the QR of ``aᵀ`` is an LQ of ``a``,
+    not something a caller expecting ``(Q, R)`` can use. Rather than copy silently or hand back a
+    differently-shaped object, this raises and names the alternatives -- :func:`lstsq` and
+    :func:`svd` both handle either order exactly and without copying, because their LAPACK drivers
+    take a transpose flag.
+    """
+    if mode not in ("economic", "r"):
+        raise ValueError(f"qr: mode must be 'economic' or 'r', not {mode!r}")
+    if a.ndim != 2:
+        raise ValueError(f"qr: a must be 2-D, got shape {a.shape}")
+    if not a.flags.f_contiguous:
+        raise ValueError(
+            "qr: requires F-contiguous input. A C-contiguous buffer is the column-major aᵀ, whose "
+            "QR is an LQ of a (SPEC §3). Either pass np.asfortranarray(a) -- an explicit copy you "
+            "are then choosing to pay for -- or use lstsq()/svd(), which handle both memory orders "
+            "with no copy."
+        )
+    if not overwrite_a:
+        ascontiguous_or_raise(a, "a")  # never let the copy hide a strided view
+    if not overwrite_a:
+        ascontiguous_or_raise(a, "a")  # never let the copy hide a strided view
+    if not overwrite_a:
+        ascontiguous_or_raise(a, "a")  # never let the copy hide a strided view
+    _check_finite(a, "a", check_finite)
+    m, n = a.shape
+    _check_dim_2d(m, n, "qr")
+    if m < n:
+        raise ValueError(f"qr: needs m >= n, got {m}x{n} (an underdetermined QR is an LQ)")
+    k = min(m, n)
+
+    qr_buf, tau = geqrf(a, overwrite_a=overwrite_a, work=work)
+    r = np.triu(qr_buf[:k, :n])
+    if mode == "r":
+        return r
+    q = orgqr(qr_buf, tau, k=k, overwrite_a=True, work=work)[:, :k]
+    return q, r
+
+
+def lstsq(
+    a: np.ndarray,
+    b: np.ndarray,
+    overwrite_a: bool = False,
+    check_finite: bool = False,
+    work: Optional[Workspace] = None,
+) -> np.ndarray:
+    """Least-squares solution of ``a x ~= b`` for FULL-RANK ``a``, via QR/LQ (``gels``).
+
+    Returns ``x`` with ``a.shape[1]`` rows. Works for either memory order with no copy of ``a``:
+    a C-contiguous buffer presents to LAPACK as ``aᵀ``, and ``gels``'s ``trans`` flag turns that
+    back into the intended problem exactly. ``b`` IS copied, because ``gels`` needs a buffer of
+    ``max(m, n)`` rows to write the solution into.
+
+    Raises on a rank-deficient ``a`` -- ``gels`` requires full rank. Use an SVD-based solve (see
+    :func:`svd`) when the rank is in question; that is the case QR cannot cover.
+
+    ``overwrite_a``/``overwrite_b`` default to False as in scipy, but ``cond`` and ``lapack_driver``
+    are not implemented: ``cond`` exists in scipy to truncate small singular values, which is an
+    SVD-based solve rather than the QR one ``gels`` performs, so accepting it here would be a
+    promise this routine cannot keep.
+    """
+    if a.ndim != 2:
+        raise ValueError(f"lstsq: a must be 2-D, got shape {a.shape}")
+    _check_finite(a, "a", check_finite)
+    _check_finite(b, "b", check_finite)
+    m_user, n_user = a.shape
+    _check_dim_2d(m_user, n_user, "lstsq")
+    transposed = not a.flags.f_contiguous
+    ldb = max(m_user, n_user)
+
+    if b.ndim == 1:
+        if b.shape[0] != m_user:
+            raise ValueError(f"lstsq: b.shape[0]={b.shape[0]} != a.shape[0]={m_user}")
+        buf = np.zeros(ldb, dtype=a.dtype)
+        buf[:m_user] = b
+    elif b.ndim == 2:
+        if b.shape[0] != m_user:
+            raise ValueError(f"lstsq: b.shape[0]={b.shape[0]} != a.shape[0]={m_user}")
+        buf = np.zeros((ldb, b.shape[1]), dtype=a.dtype, order="F")
+        buf[:m_user] = b
+    else:
+        raise ValueError("lstsq: b must be 1-D or 2-D")
+
+    out = gels(a, buf, trans=int(transposed), overwrite_a=overwrite_a, overwrite_b=True, work=work)
+    return out[:n_user]
+
+
+# ---------------------------------------------------------------------------
+# SVD
+# ---------------------------------------------------------------------------
+
+SVD_DRIVERS = ("auto", "gesdd", "gesvd")
+
+
+def _gesdd_workspace_bytes(m: int, n: int, dtype) -> int:
+    """LAPACK's minimum ``lwork`` for ``dgesdd`` with ``jobz='S'``, in bytes.
+
+    ``4k**2 + 7k`` doubles (k = min(m,n)) plus the ``8k`` int64 iwork. The optimal lwork the
+    workspace query reports is larger still, so this is a floor, not a ceiling.
+    """
+    k = min(m, n)
+    return (4 * k * k + 7 * k) * np.dtype(dtype).itemsize + 8 * k * 8
+
+
+def _auto_svd_driver(m: int, n: int, dtype) -> str:
+    """Pick an SVD driver the machine can actually afford.
+
+    The same policy ``eigh`` applies to evd-vs-ev, for the same reason: ``gesdd`` is the
+    divide-and-conquer driver whose scratch grows as ``k**2`` (~69 GiB at k = 46341 -- squarely
+    inside the range bigla exists for), while ``gesvd`` needs O(max(m,n)). Fast by default, safe
+    when fast would not fit.
+    """
+    need = _gesdd_workspace_bytes(m, n, dtype)
+    mem = _mem_available_bytes()
+    if mem is not None and need > _EVD_MEM_FRACTION * mem:
+        log.debug(
+            "svd auto-driver: 'gesvd' (gesdd needs >= %.1f GiB, MemAvailable=%.1f GiB)",
+            need / 2**30,
+            mem / 2**30,
+        )
+        return "gesvd"
+    log.debug("svd auto-driver: 'gesdd'")
+    return "gesdd"
+
+
+def svd(
+    a: np.ndarray,
+    full_matrices: bool = False,
+    compute_uv: bool = True,
+    driver: str = "auto",
+    overwrite_a: bool = False,
+    check_finite: bool = False,
+    work: Optional[Workspace] = None,
+):
+    """Reduced SVD ``a = U diag(s) Vh``, returning ``(U, s, Vh)`` (or just ``s``).
+
+    Two deliberate divergences from ``scipy.linalg.svd``, both the same argument:
+
+    * **``full_matrices`` defaults to False and True RAISES**, where scipy defaults it to True. The
+      full form materialises an ``m x m`` ``U``; past the LP64 wall that array is the thing the
+      caller came here to avoid, so it is refused rather than silently allocated.
+    * **the driver argument is ``driver=``, defaulting to ``'auto'``**, where scipy has
+      ``lapack_driver='gesdd'``. gesdd's scratch grows as ``k**2`` -- about 69 GiB at k = 46341 --
+      so picking it unconditionally is not safe at these sizes. ``'auto'`` chooses by available
+      memory (see :func:`_auto_svd_driver`); ``'gesdd'`` forces divide & conquer (fast,
+      ``O(k**2)`` workspace); ``'gesvd'`` forces QR iteration (slower, ``O(max(m,n))`` workspace).
+
+    ``overwrite_a`` defaults to False, as in scipy.
+
+    Either memory order is accepted with no copy. For a C-contiguous ``a`` LAPACK factorises
+    ``aᵀ = Ũ s Ṽᵀ``; since ``a = Ṽ s Ũᵀ``, the outputs are recovered by swapping and transposing,
+    both of which are zero-copy views. So C-order input costs nothing here -- unlike :func:`qr`,
+    where no such identity exists.
+    """
+    if driver not in SVD_DRIVERS:
+        raise ValueError(f"svd: driver must be one of {SVD_DRIVERS}, not {driver!r}")
+    if full_matrices:
+        raise NotImplementedError(
+            "svd: only full_matrices=False is implemented. The full form needs an m x m U, which "
+            "defeats the purpose of an out-of-scipy-range SVD."
+        )
+    if a.ndim != 2:
+        raise ValueError(f"svd: a must be 2-D, got shape {a.shape}")
+    _check_finite(a, "a", check_finite)
+    m_user, n_user = a.shape
+    _check_dim_2d(m_user, n_user, "svd")
+    transposed = not a.flags.f_contiguous
+
+    if driver == "auto":
+        driver = _auto_svd_driver(m_user, n_user, a.dtype)
+    fn = gesdd if driver == "gesdd" else gesvd
+    u_l, s, vt_l = fn(a, compute_uv=compute_uv, overwrite_a=overwrite_a, work=work)
+
+    if not compute_uv:
+        return s
+    if not transposed:
+        return u_l, s, vt_l
+    # LAPACK factorised aᵀ = u_l s vt_l, so a = vt_lᵀ s u_lᵀ. Both transposes are views.
+    return vt_l.T, s, u_l.T
+
+
+def svdvals(
+    a: np.ndarray,
+    driver: str = "auto",
+    overwrite_a: bool = False,
+    check_finite: bool = False,
+    work: Optional[Workspace] = None,
+) -> np.ndarray:
+    """Singular values only. Transpose-invariant, so memory order is irrelevant here.
+
+    Takes ``driver=`` (default ``'auto'``) where ``scipy.linalg.svdvals`` has no driver argument at
+    all; see :func:`svd` for why the choice cannot be made unconditionally here.
+    """
+    return svd(
+        a,
+        compute_uv=False,
+        driver=driver,
+        overwrite_a=overwrite_a,
+        check_finite=check_finite,
+        work=work,
+    )

@@ -181,3 +181,107 @@ def test_ascontiguous_or_raise_fail():
     A = np.zeros((8, 8))
     with pytest.raises(ValueError, match="contiguous"):
         ascontiguous_or_raise(A[::2, ::2], "a")
+
+
+# ---------------------------------------------------------------------------
+# Overwrite contracts for the general-matrix routines (LU / QR / SVD)
+# ---------------------------------------------------------------------------
+#
+# These exist because the new routines pass `overwrite_a` DOWN to bigla._core, whose own default is
+# True. So the public default of False is honoured one layer below where it is declared, and a
+# dropped argument anywhere in that chain would silently start consuming the caller's matrix while
+# every correctness test still passed -- the returned answer is right either way.
+
+
+def general(n=N, m=None, dtype=np.float64, seed=7):
+    """A general (non-symmetric, well-conditioned) matrix; square unless `m` is given."""
+    rng = np.random.default_rng(seed)
+    A = rng.standard_normal((m or n, n)).astype(dtype)
+    if m is None:
+        A += n * np.eye(n, dtype=dtype)
+    return np.asfortranarray(A)
+
+
+def test_lu_factor_overwrite_true():
+    A = general()
+    A_id = id(A)
+    lu = bigla.lu_factor(A, overwrite_a=True)
+    assert id(lu.lu) == A_id, "overwrite_a=True must factor in place"
+
+
+def test_lu_factor_overwrite_false():
+    A = general()
+    A_orig = A.copy()
+    bigla.lu_factor(A, overwrite_a=False)
+    np.testing.assert_array_equal(A, A_orig, err_msg="overwrite_a=False must not touch original")
+
+
+def test_lu_solve_overwrite_true():
+    A = general()
+    b = np.random.default_rng(8).standard_normal(N)
+    lu = bigla.lu_factor(A, overwrite_a=True)
+    b_id = id(b)
+    x = bigla.lu_solve(lu, b, overwrite_b=True)
+    assert id(x) == b_id, "overwrite_b=True must return the same array"
+
+
+def test_lu_solve_overwrite_false():
+    A = general()
+    b = np.random.default_rng(9).standard_normal(N)
+    b_orig = b.copy()
+    lu = bigla.lu_factor(A, overwrite_a=True)
+    bigla.lu_solve(lu, b, overwrite_b=False)
+    np.testing.assert_array_equal(b, b_orig, err_msg="overwrite_b=False must not touch b")
+
+
+def test_solve_gen_overwrite_false_leaves_both_alone():
+    """solve(assume_a='gen') delegates to lu_factor/lu_solve, so it has its own chance to drop the
+    flag on the way through."""
+    A = general()
+    b = np.random.default_rng(10).standard_normal(N)
+    A_orig, b_orig = A.copy(), b.copy()
+    bigla.solve(A, b, assume_a="gen")
+    np.testing.assert_array_equal(A, A_orig, err_msg="solve('gen') must not touch a by default")
+    np.testing.assert_array_equal(b, b_orig, err_msg="solve('gen') must not touch b by default")
+
+
+def test_qr_overwrite_false():
+    A = general(n=16, m=48)
+    A_orig = A.copy()
+    bigla.qr(A, overwrite_a=False)
+    np.testing.assert_array_equal(A, A_orig, err_msg="qr(overwrite_a=False) must not touch a")
+
+
+def test_lstsq_overwrite_false():
+    A = general(n=9, m=40)
+    b = np.random.default_rng(11).standard_normal(40)
+    A_orig, b_orig = A.copy(), b.copy()
+    bigla.lstsq(A, b, overwrite_a=False)
+    np.testing.assert_array_equal(A, A_orig, err_msg="lstsq(overwrite_a=False) must not touch a")
+    # b is always copied here: gels needs a max(m, n)-row buffer to write the solution into.
+    np.testing.assert_array_equal(b, b_orig, err_msg="lstsq must never consume b")
+
+
+@pytest.mark.parametrize("driver", ["gesdd", "gesvd"])
+def test_svd_overwrite_false(driver):
+    A = general(n=12, m=36)
+    A_orig = A.copy()
+    bigla.svd(A, driver=driver, overwrite_a=False)
+    np.testing.assert_array_equal(A, A_orig, err_msg="svd(overwrite_a=False) must not touch a")
+
+
+@pytest.mark.parametrize("driver", ["gesdd", "gesvd"])
+def test_svd_overwrite_true_does_consume_the_buffer(driver):
+    """The other direction: overwrite_a=True must not quietly copy either, or the memory argument
+    for this package evaporates."""
+    A = general(n=12, m=36)
+    A_orig = A.copy()
+    bigla.svd(A, driver=driver, overwrite_a=True)
+    assert not np.array_equal(A, A_orig), "overwrite_a=True should have consumed the buffer"
+
+
+def test_svdvals_overwrite_false():
+    A = general(n=10, m=30)
+    A_orig = A.copy()
+    bigla.svdvals(A, overwrite_a=False)
+    np.testing.assert_array_equal(A, A_orig, err_msg="svdvals must forward overwrite_a=False")

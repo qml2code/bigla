@@ -42,6 +42,22 @@ two blocker defects:
   on `symmetric=False` precisely so the pair cannot be taken half-applied. That was D2:
   `trtrs` inherited the symmetric rule from its neighbours and silently solved Aᵀx = b.
 
+- **A GENERAL matrix has no uplo at all, and the transpose is real.** LU, QR, least squares and
+  SVD read the whole matrix, so there is no triangle to flip — but a C-contiguous `(p, q)` buffer
+  still *is* the column-major `(q, p)` matrix `aᵀ`, and for a general matrix that is a different
+  matrix. bigla still does not copy: **`_validate_2d(a, name, dtype)`** returns
+  `(m, n, transposed)` describing the matrix LAPACK will actually see, and each routine carries the
+  transpose into its own algebra. Same lesson as D2, third form:
+  - **LU** — `LUFactor` stores `transposed`; `lu_solve` XORs it into `getrs`'s `trans`, so `trans=0`
+    always means the caller's `a x = b`. Exact, free.
+  - **least squares** — `gels` takes `trans` itself, set from the memory order. Exact, free for `a`.
+  - **SVD** — `aᵀ = Ũ s Ṽᵀ` gives `a = Ṽ s Ũᵀ`, so swapping and transposing the returned factors
+    recovers the caller's decomposition through views. Exact, free.
+  - **QR** — no identity repairs it: the QR of `aᵀ` is an LQ of `a`, a differently-shaped object.
+    `qr()` **raises** on C-contiguous input and names `lstsq`/`svd` as the copy-free routes. This is
+    the one place the no-copy rule costs a capability rather than buying one; do not "fix" it by
+    adding a silent `asfortranarray`.
+
 `_symmetrise`'s `upper_filled = not lower` looks order-independent and is: the uplo flip and
 the buffer transposition compose to the identity. The four-row table in its docstring is the
 **uplo choice**, not the filled numpy triangle.

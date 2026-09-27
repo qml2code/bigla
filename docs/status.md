@@ -27,6 +27,24 @@ decoration of both distro builds, which the repo had been guessing at since its 
 Nothing in the environment matrix is open. The remaining unknowns are the environments it
 cannot reach at all — see below.
 
+## Deliberate limitations in the general-matrix routines (LU / QR / SVD)
+
+Not defects, so not subject to the red-first rule above — but recorded here because this file's job
+is to keep "deferred" and "forgotten" distinguishable.
+
+- **`qr()` refuses C-contiguous input.** The QR of `aᵀ` is an LQ of `a`, so there is no output
+  reshuffle that recovers `(Q, R)` the way SVD's swap does. Rather than copy silently, it raises and
+  names `lstsq`/`svd`. Closing this means either accepting an explicit copy inside `qr` or binding
+  `gelqf` and offering LQ as its own routine. Neither is needed by any caller yet.
+- **`gesvdq` is not bound.** LAPACK ≥3.8's QR-preconditioned SVD is usually faster *and* more
+  accurate than `gesdd` on tall-skinny input, which is the shape a Z matrix actually has. It is not
+  in `_auto_svd_driver`'s choice set because availability varies by backend and nothing has needed
+  it. `_sym()` already returns cleanly for absent symbols, so probing for it is cheap when it does.
+- **The new routines' tests are feature tests, not red-first defect tests.** `tests/test_lu_qr_svd.py`
+  runs under the fast suite and checks every routine against numpy in both memory orders and both
+  dtypes, but there was no preceding tree for them to fail against. The acceptance rule above is
+  about defects; this is only worth stating so the distinction is not lost later.
+
 ### Deferred: a container with an agent in it, for environment-specific bugs
 
 The MKL leak was the first defect this project could not reproduce on the authoring machine,

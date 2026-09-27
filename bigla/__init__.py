@@ -30,13 +30,21 @@ from bigla._backend import (
     thread_control_info,
 )
 from bigla.linalg import (
+    SVD_DRIVERS,
+    LUFactor,
     cho_factor,
     cho_inverse,
     cho_solve,
     eigh,
     eigvalsh,
+    lstsq,
+    lu_factor,
+    lu_solve,
+    qr,
     solve,
     solve_triangular,
+    svd,
+    svdvals,
 )
 from bigla.workspace import Workspace
 
@@ -57,6 +65,14 @@ __all__ = [
     "cho_inverse",
     "eigh",
     "eigvalsh",
+    "lu_factor",
+    "lu_solve",
+    "LUFactor",
+    "qr",
+    "lstsq",
+    "svd",
+    "svdvals",
+    "SVD_DRIVERS",
     "solve",
     "solve_triangular",
     # workspace
