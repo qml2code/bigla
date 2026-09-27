@@ -496,8 +496,17 @@ def lu_solve(
         lu, ipiv = lu_and_piv
         transposed = False
     _check_finite(b, "b", check_finite)
-    if not overwrite_b:
-        ascontiguous_or_raise(b, "b")  # never let the copy hide a strided view
+    ascontiguous_or_raise(b, "b")  # never let a copy hide a strided view
+    # Same layout rule as cho_solve: LAPACK's getrs reads a multi-RHS b column-major, so a
+    # C-contiguous (n, nrhs) buffer is the wrong layout. scipy accepts it and copies, so mirroring
+    # scipy means doing the same rather than raising. Single-RHS (1-D) is layout-agnostic.
+    needs_reorder = b.ndim == 2 and b.shape[1] > 1 and not b.flags.f_contiguous
+    if needs_reorder:
+        b = np.asfortranarray(b)
+        overwrite_b = True  # the reordered copy is ours to consume
+    elif not overwrite_b:
+        b = b.copy(order="K")
+        overwrite_b = True
     # XOR: factorising aᵀ turns a requested 'N' solve into a 'T' one and vice versa.
     effective_trans = int(bool(trans) ^ bool(transposed))
     return getrs(lu, ipiv, b, trans=effective_trans, overwrite_b=overwrite_b)

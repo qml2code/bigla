@@ -285,3 +285,28 @@ def test_svdvals_overwrite_false():
     A_orig = A.copy()
     bigla.svdvals(A, overwrite_a=False)
     np.testing.assert_array_equal(A, A_orig, err_msg="svdvals must forward overwrite_a=False")
+
+
+def test_lu_solve_accepts_c_contiguous_multi_rhs():
+    """LAPACK getrs reads a multi-RHS b column-major, so a C-contiguous (n, nrhs) buffer is the
+    wrong layout. cho_solve mirrors scipy by reordering rather than raising; lu_solve must match, or
+    the two differ on the most ordinary call a caller can make. Found from outside bigla: a qml2
+    large-N test passed a C-contiguous (n, 2) b and got "getrs: multi-RHS b must be F-contiguous",
+    which no test in here would have caught.
+    """
+    A = general()
+    b = np.asarray(np.random.default_rng(12).standard_normal((N, 3)), order="C")
+    assert not b.flags.f_contiguous and b.flags.c_contiguous
+    b_orig = b.copy()
+    lu = bigla.lu_factor(A, overwrite_a=False)
+    x = bigla.lu_solve(lu, b)
+    np.testing.assert_array_equal(b, b_orig, err_msg="default overwrite_b=False must not touch b")
+    np.testing.assert_allclose(A @ x, b_orig, atol=1e-8)
+
+
+def test_solve_gen_accepts_c_contiguous_multi_rhs():
+    """solve(assume_a='gen') delegates to lu_solve, so it inherited the same defect."""
+    A = general()
+    b = np.asarray(np.random.default_rng(13).standard_normal((N, 2)), order="C")
+    x = bigla.solve(A, b, assume_a="gen")
+    np.testing.assert_allclose(A @ x, b, atol=1e-8)
