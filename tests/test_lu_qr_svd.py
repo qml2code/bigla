@@ -211,15 +211,23 @@ def test_svd_rejects_unknown_driver():
         bigla.svd(a, driver="gesvdx")
 
 
-def test_auto_driver_avoids_gesdd_when_workspace_would_not_fit():
-    """The policy that justifies having gesvd at all: k**2 workspace must not be chosen blindly."""
-    from bigla.linalg import _auto_svd_driver, _gesdd_workspace_bytes
+def test_gesdd_workspace_grows_with_the_smaller_dimension():
+    """gesdd's scratch is O(k**2) in k = min(m, n) -- the whole reason gesvd is worth binding too.
 
-    assert _auto_svd_driver(200, 200, np.float64) == "gesdd"  # trivially fits
-    # k = 3_000_000 -> ~2.9e14 bytes of gesdd scratch; no machine has that.
-    assert _auto_svd_driver(3_000_000, 3_000_000, np.float64) == "gesvd"
+    The DECISION this feeds (gesdd vs gesvd, and eigh's evd vs ev) is pinned in
+    tests/test_driver_policy.py against an injected memory bound. It used to be asserted here
+    against the host's real memory, which read the machine rather than the policy and failed on
+    macOS for a reason that had nothing to do with SVD: _mem_available_bytes only knew
+    /proc/meminfo.
+    """
+    from bigla.linalg import _gesdd_workspace_bytes
+
     assert _gesdd_workspace_bytes(1000, 50, np.float64) < _gesdd_workspace_bytes(
         1000, 500, np.float64
+    )
+    # k is min(m, n), so a transposed shape needs the same scratch
+    assert _gesdd_workspace_bytes(1000, 50, np.float64) == _gesdd_workspace_bytes(
+        50, 1000, np.float64
     )
 
 

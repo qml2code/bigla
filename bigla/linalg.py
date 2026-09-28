@@ -30,6 +30,7 @@ no cost.  bigla._core returns the row-major form if you want it.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional, Union
 
 import numpy as np
@@ -55,16 +56,41 @@ from bigla.workspace import Workspace
 
 log = logging.getLogger(__name__)
 
-_EVD_MEM_FRACTION = 0.8  # evd workspace fraction of MemAvailable before switching to ev
+# Fraction of the memory bound (see _mem_available_bytes) a divide-and-conquer workspace may claim
+# before the cheaper driver is chosen instead: evd -> ev for eigh, gesdd -> gesvd for svd.
+_EVD_MEM_FRACTION = 0.8
 
 
 def _mem_available_bytes() -> Optional[int]:
+    """A bound on the memory a workspace may claim, or None if the platform will not say.
+
+    Two sources, best first. Linux's ``MemAvailable`` is an estimate of what can be allocated
+    without swapping, which is exactly the question being asked. Everywhere else -- macOS above
+    all -- there is no such figure, so fall back to TOTAL physical memory via ``sysconf``, which
+    is a weaker bound: it counts memory already in use by other processes, so
+    ``_EVD_MEM_FRACTION`` of it is more permissive than on Linux. Still the right kind of answer,
+    because the driver policy exists to refuse workspaces that are absurd against the size of the
+    machine, and a total-memory ceiling refuses those just as well.
+
+    Returning None means "no bound known", and every caller then takes the FAST driver. That is
+    deliberate -- a memory heuristic must not degrade performance on a platform it cannot measure
+    -- but it also means the policy was silently inert on macOS until the sysconf fallback existed,
+    which is what `tests/test_lu_qr_svd.py` now pins.
+    """
     try:
         with open("/proc/meminfo") as fh:
             for line in fh:
                 if line.startswith("MemAvailable:"):
                     return int(line.split()[1]) * 1024
     except Exception:
+        pass
+    try:
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        page_count = os.sysconf("SC_PHYS_PAGES")
+        if page_size > 0 and page_count > 0:
+            return page_size * page_count
+    except (OSError, ValueError, AttributeError):
+        # ValueError: name absent from os.sysconf_names (Windows has no sysconf at all).
         pass
     return None
 
@@ -75,7 +101,7 @@ def _auto_driver(n: int, dtype) -> str:
     mem = _mem_available_bytes()
     if mem is not None and evd_workspace > _EVD_MEM_FRACTION * mem:
         log.debug(
-            "eigh auto-driver: 'ev' (evd needs %.1f GiB, MemAvailable=%.1f GiB)",
+            "eigh auto-driver: 'ev' (evd needs %.1f GiB, memory bound %.1f GiB)",
             evd_workspace / 2**30,
             mem / 2**30,
         )
@@ -272,7 +298,8 @@ def eigh(
     driver : {"auto", "evd", "ev"}
         "evd" — divide & conquer, fast, needs 2n² doubles workspace.
         "ev"  — plain QR, ~34n doubles, slower but memory-efficient.
-        "auto"— reads /proc/meminfo and picks evd unless workspace > 80% MemAvailable.
+        "auto"— picks evd unless its workspace exceeds 80% of the memory bound reported by
+                _mem_available_bytes (Linux MemAvailable, else total physical via sysconf).
     work : Workspace or None — reusable scratch; create once, reuse across calls
     check_finite : bool  (default False)
 
@@ -650,7 +677,7 @@ def _auto_svd_driver(m: int, n: int, dtype) -> str:
     mem = _mem_available_bytes()
     if mem is not None and need > _EVD_MEM_FRACTION * mem:
         log.debug(
-            "svd auto-driver: 'gesvd' (gesdd needs >= %.1f GiB, MemAvailable=%.1f GiB)",
+            "svd auto-driver: 'gesvd' (gesdd needs >= %.1f GiB, memory bound %.1f GiB)",
             need / 2**30,
             mem / 2**30,
         )

@@ -163,7 +163,7 @@ that — see `docs/conventions.md`:
 | --- | --- | --- |
 | `"gesdd"` | `4k² + 7k` floats (k = min(m,n)) | divide & conquer, fastest. **~69 GiB at k = 46341** — the SVD analogue of `syevd` |
 | `"gesvd"` | `max(3k + max(m,n), 5k)` | QR iteration, slower, O(max(m,n)) scratch |
-| `"auto"` (default) | — | `gesdd` when its workspace fits in `_EVD_MEM_FRACTION` of `MemAvailable`, else `gesvd` |
+| `"auto"` (default) | — | `gesdd` when its workspace fits in `_EVD_MEM_FRACTION` of the memory bound, else `gesvd` |
 
 `qr(mode="r")` and `lstsq` are the memory-lean route when only a least-squares solve is wanted: QR
 scratch is O(n), and `ormqr` applies `Q` without forming it. Rank-deficient input is the case QR
@@ -200,7 +200,24 @@ useful for the question it cannot answer: what is *this* handle doing.
 |---|---|---|---|---|
 | `"evd"` | `dsyevd` | 2n² + 6n + 1 doubles | **37 GiB** | fast; default unless memory is tight |
 | `"ev"` | `dsyev` | ~34n doubles | 14 MiB | slower; use when the matrix fills the node |
-| `"auto"` | — | — | — | reads `/proc/meminfo` and picks |
+| `"auto"` | — | — | — | picks against the memory bound (below) |
+
+### The memory bound `auto` uses
+
+Both `eigh` and `svd` choose their driver by asking whether the fast one's workspace fits inside
+`_EVD_MEM_FRACTION` (0.8) of a memory bound, taken from the first of these that answers:
+
+1. `MemAvailable` from `/proc/meminfo` — Linux only, and the figure you actually want: an estimate
+   of what can be allocated without swapping.
+2. Total physical memory, via `sysconf(SC_PAGE_SIZE) * sysconf(SC_PHYS_PAGES)` — works on macOS.
+   A weaker bound, since it counts memory other processes already hold, so `0.8` of it is more
+   permissive than on Linux.
+3. Nothing — on a platform that reports neither (Windows has no `sysconf`), **the fast driver is
+   chosen regardless of size.** A memory heuristic should not slow down a platform it cannot
+   measure; if you need the lean driver there, pass `driver=` explicitly.
+
+Until the `sysconf` fallback existed only (1) did, so on macOS the bound was always unknown and
+rule (3) made the policy inert — `gesdd` and `evd` every time, whatever the problem size.
 
 ---
 

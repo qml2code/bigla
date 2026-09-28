@@ -40,6 +40,13 @@ is to keep "deferred" and "forgotten" distinguishable.
   accurate than `gesdd` on tall-skinny input, which is the shape a Z matrix actually has. It is not
   in `_auto_svd_driver`'s choice set because availability varies by backend and nothing has needed
   it. `_sym()` already returns cleanly for absent symbols, so probing for it is cheap when it does.
+- **No memory bound on Windows, and the fast driver is taken there regardless of size.**
+  `_mem_available_bytes` tries `/proc/meminfo` then `sysconf(SC_PHYS_PAGES)`; Windows has neither, so
+  it returns None and both `auto` policies fall through to `evd`/`gesdd`. Kept deliberately -- a
+  heuristic that cannot measure a platform must not slow it down -- and `driver=` is the escape hatch.
+  `GlobalMemoryStatusEx` via `ctypes` would close it if a Windows user ever appears; no CI row covers
+  Windows today, so nothing would test it.
+
 - **The new routines' tests are feature tests, not red-first defect tests.** `tests/test_lu_qr_svd.py`
   runs under the fast suite and checks every routine against numpy in both memory orders and both
   dtypes, but there was no preceding tree for them to fail against. The acceptance rule above is
@@ -84,6 +91,7 @@ Those have no container form and stay UNVERIFIED in `docs/backends.md` until som
 | **5.5** | lwork guard | `test_workspace.py` |
 | **FIXES §5.6** | No CI. `.github/workflows/ci.yml` runs lint plus the fast suite over the numpy axis SPEC §10 specifies (2.0 / 2.2 / current x py3.10/3.12/3.13, wheel and standalone `scipy-openblas64`, plus a macOS leg), and uploads each leg's `diagnose --format=json`. | `tests/test_matrix_config.py` pins the row definitions; the workflow itself is exercised by running. |
 | **FIXES §6** — environment matrix | All six rows of run 34354219949 green, 2026-09-09. Every row runs the fast suite *and* `tests/long`, so each asserts the resolved path, decoration, confidence and ILP64 verdict of its own environment; `docs/backends.md`'s table is generated from that run and the hand-entered seed row is gone. | `tests/long/test_env_matrix.py` per row; `tests/test_matrix_config.py` pins the row definitions |
+| **macOS `auto` driver policy inert** | `_mem_available_bytes` read only `/proc/meminfo`, so on macOS it returned None, every caller read None as "no bound known" and took the memory-hungry driver (`gesdd`, `evd`) at any size. `eigh`'s half had shipped untested since the beginning; the CI macOS leg caught it only once `svd` added the first auto-driver assertion. Fallback to total physical memory via `sysconf` added. | `tests/test_driver_policy.py` (9 tests): the fallback, both drivers' decisions against an injected bound, and the deliberate unknown-bound behaviour |
 | **`conda-mkl` symbol leak** | Not a defect. `dpotrf_64_` does go global after bigla loads `libmkl_rt.so.3`, but `dladdr` reports the provider as `libmkl_intel_ilp64.so.3` — a file bigla never opened. `libmkl_rt` is a dispatcher and loads its own implementation globally on the first call that initialises MKL (for bigla, `_query_threads`; `MKL_Set_Interface_Layer` only records a preference, which is why two attempts to reproduce it in-process failed). | `test_no_global_symbol_leak`, which now attributes by provenance and skips naming the provider |
 
 ### How D3/D4/5.4 were verified red

@@ -294,8 +294,17 @@ Document the workspace cost, because it dominates:
 
 (`lwork` formulas confirmed against `scipy.linalg.lapack.dsyevd_lwork(4000) = 32024001`.)
 Default should be `"evd"` for `n` below a threshold and `"ev"` above it — or better, an
-`auto` policy that reads `MemAvailable` from `/proc/meminfo` and picks. Make the policy
-overridable and log the choice at DEBUG.
+`auto` policy that reads a memory bound and picks. Make the policy overridable and log the
+choice at DEBUG.
+
+**Amendment.** "reads `MemAvailable` from `/proc/meminfo`" was the original wording and it made
+the policy Linux-only: on a platform with no `/proc`, the probe returned "unknown", every caller
+read unknown as "take the fast driver", and the policy was silently inert. `_mem_available_bytes`
+now falls back to total physical memory via `sysconf(SC_PAGE_SIZE) * sysconf(SC_PHYS_PAGES)`,
+which macOS supports. That bound is weaker -- total rather than available -- so the fraction is
+more permissive there, but it still refuses the workspaces this policy exists to refuse. The
+"unknown means fast driver" rule is kept deliberately, and is pinned by
+`tests/test_driver_policy.py` together with both drivers' decisions against an injected bound.
 
 ### 6.5 Workspace object
 
